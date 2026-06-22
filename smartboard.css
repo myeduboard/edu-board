@@ -266,7 +266,7 @@
 
   /* text editing box */
   #sb-textedit{position:absolute;z-index:48;display:none;background:transparent;border:1px dashed var(--accent);
-    color:#000;font-family:inherit;outline:none;resize:none;overflow:hidden;padding:2px 3px;min-width:30px;line-height:1.15;}
+    color:var(--txt);font-family:inherit;outline:none;resize:none;overflow:hidden;padding:2px 3px;min-width:30px;line-height:1.15;}
 
   /* toast */
   #sb-toast{position:absolute;left:50%;bottom:140px;transform:translateX(-50%) translateY(8px);background:#000;color:#fff;
