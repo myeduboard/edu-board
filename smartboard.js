@@ -246,6 +246,30 @@ var MARKUP = `
 
 function boot(host){
   if(!host || host.getAttribute('data-sb-mounted')) return;
+
+  /* ── Domain lock ── Only runs on the authorised domain ── */
+  (function(){
+    var allowed=['animalhusbandryinfo.blogspot.com','live.eduboard.in'];
+    var h=(location.hostname||'').toLowerCase().replace(/^www\./,'');
+    if(allowed.indexOf(h)!==-1) return; // authorised — proceed normally
+    // Unauthorised domain: blank the host element and show a clear message
+    host.innerHTML='';
+    host.style.cssText='display:flex;align-items:center;justify-content:center;min-height:120px;'+
+      'background:#0f1216;border-radius:12px;font-family:system-ui,sans-serif;padding:24px;';
+    var msg=document.createElement('div');
+    msg.style.cssText='text-align:center;color:#9aa3b0;font-size:13.5px;line-height:1.6;max-width:340px;';
+    msg.innerHTML='<svg viewBox="0 0 24 24" width="36" height="36" fill="none" stroke="#F26D6D" stroke-width="1.7" '+
+      'stroke-linecap="round" stroke-linejoin="round" style="margin-bottom:10px">'+
+      '<rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg><br>'+
+      '<b style="color:#E8EBEF;font-size:15px;">Access Restricted</b><br>'+
+      'This tool is licensed for use on<br>'+
+      '<a href="https://animalhusbandryinfo.blogspot.com" style="color:#F4B740;text-decoration:none;" '+
+      'target="_blank" rel="noopener">animalhusbandryinfo.blogspot.com</a> only.';
+    host.appendChild(msg);
+    throw new Error('[Smartboard] Unauthorised domain: '+h);
+  })();
+  /* ── End domain lock ── */
+
   host.setAttribute('data-sb-mounted','1');
   host.classList.add('smartboard-embed');
   if(!host.hasAttribute('tabindex')) host.setAttribute('tabindex','0');
