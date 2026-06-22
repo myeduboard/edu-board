@@ -528,10 +528,10 @@ function serAll(){
   // undo/redo/save snapshot reflects what's actually on screen, not a stale
   // default (scale:1,x:0,y:0) that makes the page look blank when restored.
   if(page()) page().view={...view};
-  return JSON.stringify(pages.map(p=>({bg:p.bg,view:p.view,objs:p.objs.map(serObj),autofit:p.autofit})));
+  return JSON.stringify(pages.map(p=>({bg:p.bg,view:p.view,objs:p.objs.map(serObj),autofit:p.autofit,fitWidth:p.fitWidth})));
 }
 function loadAll(json, stripDrawings){
-  pages=JSON.parse(json).map(p=>({bg:p.bg,view:p.view||{scale:1,x:0,y:0},objs:stripDrawings?[]:(p.objs||[]),autofit:p.autofit}));
+  pages=JSON.parse(json).map(p=>({bg:p.bg,view:p.view||{scale:1,x:0,y:0},objs:stripDrawings?[]:(p.objs||[]),autofit:p.autofit,fitWidth:p.fitWidth}));
   pages.forEach(p=>{if(p.bg.src)ensureImg(p.bg.src);p.objs.forEach(o=>{if(o.t==='image')ensureImg(o.src);});});
   cur=Math.min(cur,pages.length-1); view=page().view; selection=null;
 }
@@ -1827,7 +1827,7 @@ cv.addEventListener('pointerdown', _onDtPointerDown, true);
 
 // Keyboard shortcut: backtick ` or Shift+H to toggle toolbars
 host.addEventListener('keydown', function(e){
-  if(e.target === ta || e.target === chatInput || e.target === aiKeyInput || e.target === aiModelInput) return;
+  if(e.target === ta || e.target === chatInput || e.target === aiKeyInput || e.target === aiModelInput || /^(INPUT|TEXTAREA|SELECT)$/.test(e.target.tagName)) return;
   if(e.key === '`' || (e.key === 'H' && e.shiftKey)){
     e.preventDefault();
     toggleUI();
