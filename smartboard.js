@@ -1710,7 +1710,7 @@ $('#sb-timer-reset').addEventListener('click',()=>{clearInterval(tInt);tRun=fals
 /* ============================== keyboard ============================== */
 let spaceDown=false;
 host.addEventListener('keydown',e=>{
-  if(e.target===ta||e.target===chatInput||e.target===aiKeyInput||e.target===aiModelInput)return;
+  if(e.target===ta||e.target===chatInput||e.target===aiKeyInput||e.target===aiModelInput||/^(INPUT|TEXTAREA|SELECT)$/.test(e.target.tagName))return;
   if(e.key===' '){spaceDown=true;cv.style.cursor='grab';}
   if((e.ctrlKey||e.metaKey)&&e.key.toLowerCase()==='z'){e.preventDefault();e.shiftKey?redo():undo();return;}
   if((e.ctrlKey||e.metaKey)&&e.key.toLowerCase()==='y'){e.preventDefault();redo();return;}
@@ -1721,11 +1721,14 @@ host.addEventListener('keydown',e=>{
   // also let it fall through to the plain-letter tool shortcuts.
   if(map[k] && !e.shiftKey){setTool(map[k]);const btn=dock.querySelector(`[data-tool="${map[k]}"]`);if(btn){dock.querySelectorAll('.sb-tool').forEach(b=>{if(b.dataset.tool)b.classList.remove('active')});btn.classList.add('active');}}
   if((e.key==='Delete'||e.key==='Backspace')&&selection){pushUndo();page().objs=page().objs.filter(o=>o!==selection);selection=null;render();}
-  if(e.key==='='||e.key==='+'){zoomBy(1.15);}
-  if(e.key==='-'){zoomBy(1/1.15);}
-  if(e.key==='0'){fitView();render();}
-  if(e.key==='ArrowRight')switchPage(cur+1);
-  if(e.key==='ArrowLeft')switchPage(cur-1);
+  if(e.key==='='||e.key==='+'){e.preventDefault();zoomBy(1.15);}
+  if(e.key==='-'){e.preventDefault();zoomBy(1/1.15);}
+  if(e.key==='0'){e.preventDefault();fitView();render();}
+  // preventDefault on Left/Right so no native browser action (e.g. page/
+  // viewport zoom or scroll on some kiosk browsers) sneaks in alongside the
+  // page switch and ends up shrinking the slide right after fitView() runs.
+  if(e.key==='ArrowRight'){e.preventDefault();switchPage(cur+1);}
+  if(e.key==='ArrowLeft'){e.preventDefault();switchPage(cur-1);}
 });
 host.addEventListener('keyup',e=>{if(e.key===' '){spaceDown=false;cv.style.cursor=tool==='select'?'default':'crosshair';}});
 function zoomBy(f){leaveAutofit();const w=cv.clientWidth/2,h=cv.clientHeight/2;const ns=Math.max(.2,Math.min(8,view.scale*f));view.x=w-(w-view.x)*(ns/view.scale);view.y=h-(h-view.y)*(ns/view.scale);view.scale=ns;render();}
