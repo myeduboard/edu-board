@@ -46,8 +46,8 @@ var MARKUP = `
     <button class="sb-btn" id="sb-next" title="Next page"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18l6-6-6-6"/></svg></button>
     <button class="sb-btn" id="sb-addpage" title="Add blank page"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14M5 12h14"/></svg></button>
     <div class="sb-sep"></div>
-    <button class="sb-btn" id="sb-undo" title="Undo"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7v6h6"/><path d="M3 13a9 9 0 1 0 3-7.7L3 8"/></svg></button>
-    <button class="sb-btn" id="sb-redo" title="Redo"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 7v6h-6"/><path d="M21 13a9 9 0 1 1-3-7.7L21 8"/></svg></button>
+    <button class="sb-btn" id="sb-undo" title="Undo"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 14H4V9"/><path d="M4 14C5.5 8.5 10.5 5 16 5c3.5 0 6 2 6 2"/></svg></button>
+    <button class="sb-btn" id="sb-redo" title="Redo"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 14h5V9"/><path d="M20 14C18.5 8.5 13.5 5 8 5c-3.5 0-6 2-6 2"/></svg></button>
     <div class="sb-sep"></div>
     <button class="sb-btn" id="sb-bg" title="Page background"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3h18v18H3z"/><path d="M3 9h18M9 3v18"/></svg></button>
     <div class="sb-sep"></div>
@@ -293,6 +293,7 @@ let dpr=Math.max(1,window.devicePixelRatio||1);
 const COLORS=['#15181d','#ffffff','#E5484D','#F4B740','#46A758','#1f6feb','#8E4EC6','#EC4899'];
 const SIZES=[2,4,7,12,20];
 const DEF_BG={type:'grid',color:'#ffffff'};
+let activeBg={...DEF_BG}; // tracks last chosen background; new blank pages inherit it
 let pages=[newPage()], cur=0;
 let view={scale:1,x:0,y:0};
 pages[0].view=view;
@@ -770,7 +771,7 @@ $('#sb-redo').addEventListener('click',redo);
 $('#sb-zoomin').addEventListener('click',()=>zoomBy(1.15));
 $('#sb-zoomout').addEventListener('click',()=>zoomBy(1/1.15));
 $('#sb-zoomfit').addEventListener('click',()=>{fitView();render();});
-$('#sb-addpage').addEventListener('click',()=>{pushUndo();page().view={...view};pages.splice(cur+1,0,newPage());cur++;view={...page().view};updatePageLbl();render();toast('Blank page added');});
+$('#sb-addpage').addEventListener('click',()=>{pushUndo();page().view={...view};const np=newPage();np.bg={...activeBg};pages.splice(cur+1,0,np);cur++;view={...page().view};updatePageLbl();render();toast('Blank page added');});
 
 /* ============================== background menu ============================== */
 const bgMenu=popup($('#sb-bg'),[
@@ -780,7 +781,7 @@ const bgMenu=popup($('#sb-bg'),[
   {label:'Dots',act:()=>setBg({type:'dots',color:'#ffffff'})},
   {label:'Blackboard',act:()=>setBg({type:'black'})},
 ]);
-function setBg(bg){pushUndo();page().bg=bg;render();bgMenu.hide();}
+function setBg(bg){pushUndo();page().bg=bg;activeBg={...bg};render();bgMenu.hide();}
 
 /* ============================== export menu ============================== */
 const exMenu=popup($('#sb-export'),[
@@ -798,7 +799,7 @@ function popup(anchor, items){
   const api={show(){const a=$('#sb-app').getBoundingClientRect();const r=anchor.getBoundingClientRect();el.style.display='flex';el.style.top=(r.bottom-a.top+8)+'px';el.style.left=Math.max(6,Math.min(r.left-a.left,a.width-210))+'px';},hide(){el.style.display='none';}};
   popup._all=popup._all||[]; popup._all.push(api);
   anchor.addEventListener('click',e=>{e.stopPropagation();const open=el.style.display==='flex';popup._all.forEach(p=>{if(p!==api)p.hide();});api[open?'hide':'show']();});
-  document.addEventListener('click',()=>api.hide());
+  host.addEventListener('click',()=>api.hide());
   el.addEventListener('click',e=>e.stopPropagation());
   return api;
 }
@@ -996,7 +997,7 @@ function startWithQuizJSON(f){
   wfile.addEventListener('change',e=>{ peekFileForHindi(e.target.files[0]); },true);
 
   // Welcome screen lang button handlers
-  document.querySelectorAll('.sb-lang-btn').forEach(btn=>{
+  root.querySelectorAll('.sb-lang-btn').forEach(btn=>{
     btn.addEventListener('click',()=>{
       quizLang=btn.dataset.lang||'en';
       updateWelcomeLangBtns();
@@ -1023,7 +1024,7 @@ function showLangButtons(){
   const sep=$('#sb-lang-sep'); if(sep) sep.style.display='';
 }
 (function(){
-  document.addEventListener('click',e=>{
+  host.addEventListener('click',e=>{
     const btn=e.target.closest('.sb-lang-mode-btn');
     if(btn&&btn.dataset.lang){
       rerenderQuizInLang(btn.dataset.lang);
@@ -1128,7 +1129,7 @@ function nativeBrowse(inp){
   drop.addEventListener('drop',e=>{e.preventDefault();e.stopPropagation();drop.classList.remove('drag');var f=e.dataTransfer&&e.dataTransfer.files&&e.dataTransfer.files[0];if(f)handlePicked(f);});
   pk.addEventListener('dragover',e=>{e.preventDefault();});
   pk.addEventListener('drop',e=>{e.preventDefault();var f=e.dataTransfer&&e.dataTransfer.files&&e.dataTransfer.files[0];if(f)handlePicked(f);});
-  document.addEventListener('keydown',e=>{ if(e.key==='Escape'&&pk.classList.contains('open'))closePicker(); });
+  host.addEventListener('keydown',e=>{ if(e.key==='Escape'&&pk.classList.contains('open'))closePicker(); });
 })();
 /* drop a board file anywhere on the board to restore it (no dialog, stays fullscreen).
    PDF/PPTX are intentionally NOT accepted here — import those from the welcome screen. */
@@ -1189,7 +1190,7 @@ let h2cReady=false;
 /* --- Language support (English / Hindi) --- */
 let quizLang='en';           // 'en' or 'hi'
 let quizQsCache=null;         // last loaded questions array
-let quizTopicCache=''        // last loaded topic name
+let quizTopicCache='';        // last loaded topic name
 let quizFontScale=1;          // question/option text size multiplier (font resizer setting)
 const QUIZ_FONT_MIN=0.4, QUIZ_FONT_MAX=3.0, QUIZ_FONT_STEP=0.1;
 async function ensureH2C(){
@@ -1447,7 +1448,7 @@ async function exportPDF(){
   hideLoad();
 }
 function saveBoard(){const blob=new Blob([serAll()],{type:'application/json'});download(blob,'board.smartboard');toast('Board saved');}
-function openBoard(f){const r=new FileReader();r.onload=()=>{try{undoStack=[];redoStack=[];loadAll(r.result);updateUndo();updatePageLbl();fitView?.();view=page().view||view;render();toast('Board loaded');}catch(e){toast('Invalid board file');}};r.readAsText(f);}
+function openBoard(f){const r=new FileReader();r.onload=()=>{try{undoStack=[];redoStack=[];loadAll(r.result);cur=Math.min(cur,pages.length-1);view={...page().view};updateUndo();updatePageLbl();if(page().bg.type==='image')fitView();render();toast('Board loaded');}catch(e){toast('Invalid board file');}};r.readAsText(f);}
 
 /* ============================== screen shade ============================== */
 const shade=$('#sb-shade'); let shadeH=0;
