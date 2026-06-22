@@ -929,7 +929,7 @@ function startWithQuizJSON(f){
         quizFontScale=1; // reset question font size for each newly loaded quiz
         const out=await renderMCQPages(qs,topicName,quizLang);
         if(!out.length) throw new Error('no pages rendered');
-        pages=out.map(d=>({bg:{type:'image',src:d.src,w:d.w,h:d.h},view:{scale:1,x:0,y:0},objs:[],autofit:true}));
+        pages=out.map(d=>({bg:{type:'image',src:d.src,w:d.w,h:d.h},view:{scale:1,x:0,y:0},objs:[],autofit:true,fitWidth:true}));
         out.forEach(d=>ensureImg(d.src));
         cur=0; fitView(); pages[0].view={...view}; selection=null;
         undoStack=[]; redoStack=[];
@@ -1062,7 +1062,7 @@ async function applyQuizFontScale(scale){
     const out=await renderMCQPages(quizQsCache,quizTopicCache,quizLang);
     if(!out.length) throw new Error('no pages');
     const prevCur=Math.min(cur,out.length-1);
-    pages=out.map(d=>({bg:{type:'image',src:d.src,w:d.w,h:d.h},view:{scale:1,x:0,y:0},objs:[],autofit:true}));
+    pages=out.map(d=>({bg:{type:'image',src:d.src,w:d.w,h:d.h},view:{scale:1,x:0,y:0},objs:[],autofit:true,fitWidth:true}));
     out.forEach(d=>ensureImg(d.src));
     cur=prevCur; fitView(); pages[cur].view={...view}; selection=null;
     undoStack=[]; redoStack=[];
@@ -1219,7 +1219,7 @@ function questionCardHTML(post,i,total,topicName,lang){
           <div style="flex:1;font:400 ${optPx}px/1.25 ${bodyFont};color:#1e293b;">${escapeHtml(o.text)}</div>
         </div>`).join('')
     : [0,1,2].map(()=>`<div style="margin-top:32px;border-bottom:2px solid #cbd5e1;height:44px;"></div>`).join('');
-  return `<div style="width:1280px;height:720px;background:#fff;padding:11px 12px;box-sizing:border-box;font-family:${bodyFont};display:flex;flex-direction:column;">
+  return `<div style="width:1280px;min-height:720px;background:#fff;padding:11px 12px;box-sizing:border-box;font-family:${bodyFont};display:flex;flex-direction:column;">
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;flex:none;">
       <div style="font:700 13px/1 Arial,sans-serif;letter-spacing:.04em;text-transform:uppercase;color:#64748b;">${topicDisplay}</div>
       <div style="font:600 13px/1 Arial,sans-serif;color:#94a3b8;">${questionLabel}</div>
@@ -1251,22 +1251,22 @@ function questionCardBilingualHTML(post,i,total,topicName){
         <div style="flex:1;font:400 ${optPx}px/1.25 ${font};color:#1e293b;">${escapeHtml(o.text)}</div>
       </div>`).join('');
   }
-  return `<div style="width:1280px;height:720px;background:#fff;padding:10px 12px;box-sizing:border-box;display:flex;flex-direction:column;">
+  return `<div style="width:1280px;min-height:720px;background:#fff;padding:10px 12px;box-sizing:border-box;display:flex;flex-direction:column;">
     <!-- Header -->
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;flex:none;">
       <div style="font:700 12px/1 Arial,sans-serif;letter-spacing:.06em;text-transform:uppercase;color:#64748b;">${topicName2}</div>
       <div style="font:600 12px/1 Arial,sans-serif;color:#94a3b8;">Question ${i+1} of ${total}</div>
     </div>
     <!-- Two-column body -->
-    <div style="display:flex;flex:1;gap:0;min-height:0;">
+    <div style="display:flex;flex:1 1 auto;gap:0;">
       <!-- English column -->
-      <div style="flex:1;padding:10px 14px 10px 0;border-right:2px solid #e2e8f0;display:flex;flex-direction:column;overflow:hidden;">
+      <div style="flex:1;padding:10px 14px 10px 0;border-right:2px solid #e2e8f0;display:flex;flex-direction:column;overflow:visible;">
         <div style="font:700 11px/1 Arial,sans-serif;letter-spacing:.08em;text-transform:uppercase;color:#3b82f6;margin-bottom:8px;flex:none;">English</div>
         <div style="font:600 ${qPx}px/1.4 ${enFont};color:#0f172a;margin-bottom:10px;flex:none;">${enContent}</div>
         <div style="display:flex;flex-direction:column;gap:10px;flex:none;">${colOpts(enOpts,enFont)}</div>
       </div>
       <!-- Hindi column -->
-      <div style="flex:1;padding:10px 0 10px 14px;display:flex;flex-direction:column;overflow:hidden;">
+      <div style="flex:1;padding:10px 0 10px 14px;display:flex;flex-direction:column;overflow:visible;">
         <div style="font:700 11px/1 Arial,sans-serif;letter-spacing:.08em;text-transform:uppercase;color:#8b5cf6;margin-bottom:8px;flex:none;">हिंदी</div>
         <div style="font:600 ${qPx}px/1.4 ${hiFont};color:#0f172a;margin-bottom:10px;flex:none;">${hiContent}</div>
         <div style="display:flex;flex-direction:column;gap:10px;flex:none;">${colOpts(hiOpts,hiFont)}</div>
@@ -1281,6 +1281,7 @@ async function renderMCQPages(qs,topicName,lang){
   document.body.appendChild(holder);
   const out=[];
   const effectiveLang=lang||quizLang;
+  const BASE_W=1280, BASE_H=720;
   try{
     for(let i=0;i<qs.length;i++){
       showLoad(`Building question ${i+1} of ${qs.length}…`);
@@ -1289,7 +1290,20 @@ async function renderMCQPages(qs,topicName,lang){
       } else {
         holder.innerHTML=questionCardHTML(qs[i],i,qs.length,topicName,effectiveLang);
       }
-      const c=await window.html2canvas(holder.firstElementChild,{scale:1.5,backgroundColor:'#fff',logging:false});
+      const el=holder.firstElementChild;
+      // The card template fixes width at 1280px always and never alters
+      // font size on its own — it only uses min-height:720px so the box
+      // itself grows downward when content (at the chosen font %) is taller
+      // than the standard slide. We capture the element's own natural box
+      // as-is (no forced width/height passed to html2canvas), so the
+      // screenshot always matches exactly what's really on screen: fixed
+      // width, fixed font size, bottom edge stretched only if needed.
+      const naturalW=Math.ceil(el.getBoundingClientRect().width);
+      const naturalH=Math.ceil(el.getBoundingClientRect().height);
+      if(naturalH>BASE_H){
+        console.log(`[smartboard] Question ${i+1}/${qs.length}${topicName?` ("${topicName}")`:''} overflowed the ${BASE_H}px slide by ${naturalH-BASE_H}px at ${Math.round((quizFontScale||1)*100)}% font size — stretching slide bottom to ${naturalH}px (width stays ${naturalW}px, font size unchanged).`);
+      }
+      const c=await window.html2canvas(el,{scale:1.5,backgroundColor:'#fff',logging:false});
       out.push({src:c.toDataURL('image/jpeg',0.88),w:c.width,h:c.height});
     }
   }finally{ holder.remove(); }
@@ -1307,7 +1321,7 @@ async function rerenderQuizInLang(lang){
     if(!out.length) throw new Error('no pages');
     // Preserve current page index
     const prevCur=Math.min(cur,out.length-1);
-    pages=out.map(d=>({bg:{type:'image',src:d.src,w:d.w,h:d.h},view:{scale:1,x:0,y:0},objs:[],autofit:true}));
+    pages=out.map(d=>({bg:{type:'image',src:d.src,w:d.w,h:d.h},view:{scale:1,x:0,y:0},objs:[],autofit:true,fitWidth:true}));
     out.forEach(d=>ensureImg(d.src));
     cur=prevCur; fitView(); pages[cur].view={...view}; selection=null;
     undoStack=[]; redoStack=[];
@@ -1380,8 +1394,22 @@ function addDocPages(list){
 function fitView(){
   const pg=page(); if(pg.bg.type!=='image'){view={scale:1,x:0,y:0};return;}
   const w=cv.clientWidth,h=cv.clientHeight; const m=0.94;
-  const s=Math.min(w*m/pg.bg.w, h*m/pg.bg.h);
-  view={scale:s, x:(w-pg.bg.w*s)/2, y:(h-pg.bg.h*s)/2};
+  let s,x,y;
+  if(pg.fitWidth){
+    // Quiz slides: every slide shares the same 1280px width, but a
+    // question that overflows at a big font size gets extra height
+    // (stretched bottom) instead of a smaller font. Scaling by width only
+    // keeps that width — and the on-screen text size — identical across
+    // every question; only the page's visible height differs, with any
+    // overflow extending below rather than shrinking the page to fit.
+    s=w*m/pg.bg.w;
+    x=(w-pg.bg.w*s)/2;
+    y=Math.max((h-h*m)/2, (h-pg.bg.h*s)/2);
+  } else {
+    s=Math.min(w*m/pg.bg.w, h*m/pg.bg.h);
+    x=(w-pg.bg.w*s)/2; y=(h-pg.bg.h*s)/2;
+  }
+  view={scale:s, x, y};
   pg.autofit=true; // mark this page as "fit to screen" so resize/rotate/fullscreen keep it fitted
 }
 // Any manual zoom or pan on the current page takes it out of auto-fit mode,
