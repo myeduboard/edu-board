@@ -297,7 +297,11 @@ function boot(host){
     if(fixedH){ var v=fixedH; if(/^[0-9]+$/.test(v)) v=v+'px'; if(host.style.height!==v) host.style.height=v; return; }
     var w = host.clientWidth || (host.getBoundingClientRect&&host.getBoundingClientRect().width) || 0;
     if(!w) return;
-    var vh = window.innerHeight || 800;
+    // On mobile browsers, window.innerHeight includes the area behind the
+    // browser's own nav bar / address bar, making the board taller than what
+    // is actually visible and pushing the bottom dock off-screen.
+    // visualViewport.height returns only the *visible* portion and fixes this.
+    var vh = (window.visualViewport ? window.visualViewport.height : 0) || window.innerHeight || 800;
     var max = MAXH || Math.min(900, Math.round(vh*0.86));
     var hgt = Math.max(MINH, Math.min(max, Math.round(w/ASPECT)));
     var px = hgt+'px';
@@ -307,8 +311,10 @@ function boot(host){
   // keep height in sync as the column/viewport changes
   if(window.ResizeObserver){ try{ new ResizeObserver(function(){ applyHeight(); }).observe(host); }catch(_){ } }
   window.addEventListener('resize', applyHeight);
+  // visualViewport fires when the mobile browser chrome expands/collapses
+  if(window.visualViewport){ window.visualViewport.addEventListener('resize', applyHeight); }
   // while the board is fullscreen, drop the inline height so it fills the screen; restore on exit
-  function onHostFS(){ if(isHostFS()){ host.style.height=''; } else { applyHeight(); } }
+  function onHostFS(){ if(isHostFS()){ host.style.height=''; host.style.setProperty('--sb-bottom-extra','0px'); } else { applyHeight(); host.style.removeProperty('--sb-bottom-extra'); } }
   document.addEventListener('fullscreenchange', onHostFS);
   document.addEventListener('webkitfullscreenchange', onHostFS);
   host.innerHTML = MARKUP;
