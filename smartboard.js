@@ -238,7 +238,17 @@ var MARKUP = `
         <button class="sb-lang-btn" data-lang="both" id="sb-welcome-lang-both" style="padding:5px 14px;border-radius:6px;border:1.5px solid #e2e8f0;background:#f8fafc;color:#475569;font-weight:600;font-size:13px;cursor:pointer;">EN + हि</button>
       </div>
       <input type="file" id="sb-welcome-file" accept=".pdf,.pptx,.json,.smartboard" class="sb-hidden">
-      <div id="sb-welcome-hint">Opens in full screen · press <b>Esc</b> to return here</div>
+      <div id="sb-welcome-hint">Choose <b>Full Screen</b> for a distraction-free board, or <b>Normal Mode</b> to stay in the window</div>
+      <div id="sb-welcome-mode-row" style="display:flex;gap:8px;justify-content:center;margin-top:10px;flex-wrap:wrap;">
+        <label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:13px;color:#475569;user-select:none;">
+          <input type="radio" name="sb-launch-mode" id="sb-mode-fullscreen" value="fullscreen" checked style="accent-color:#3b82f6;width:15px;height:15px;">
+          <span>Full Screen</span>
+        </label>
+        <label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:13px;color:#475569;user-select:none;">
+          <input type="radio" name="sb-launch-mode" id="sb-mode-normal" value="normal" style="accent-color:#3b82f6;width:15px;height:15px;">
+          <span>Normal Mode</span>
+        </label>
+      </div>
     </div>
   </div>
 </div>
@@ -906,7 +916,11 @@ function startWithFile(f){
   }
   $('#sb-welcome').classList.add('hide');
   try{ fsEl.focus && fsEl.focus({preventScroll:true}); }catch(_){ try{ fsEl.focus && fsEl.focus(); }catch(__){} }
-  enterFS().then(()=>setTimeout(resize,80)).catch(()=>{ setTimeout(resize,80); });
+  if(wantsFullscreen()){
+    enterFS().then(()=>setTimeout(resize,80)).catch(()=>{ setTimeout(resize,80); });
+  } else {
+    setTimeout(resize,80);
+  }
   if(n.endsWith('.pdf')) importPDF(f); else importPPT(f);
 }
 // Welcome-screen-only quiz loader. Unlike the in-canvas "Open board file"
@@ -922,10 +936,18 @@ function startWithFile(f){
 //      question text and lettered options. The correct answer / explanation
 //      fields, if present, are intentionally NOT shown on the page, so the
 //      board can be used as a real worksheet rather than spoiling answers.
+function wantsFullscreen(){
+  var r=$('#sb-mode-normal');
+  return !(r && r.checked);
+}
 function enterAndShowBoard(){
   $('#sb-welcome').classList.add('hide');
   try{ fsEl.focus && fsEl.focus({preventScroll:true}); }catch(_){ try{ fsEl.focus && fsEl.focus(); }catch(__){} }
-  enterFS().then(()=>setTimeout(resize,80)).catch(()=>{ setTimeout(resize,80); });
+  if(wantsFullscreen()){
+    enterFS().then(()=>setTimeout(resize,80)).catch(()=>{ setTimeout(resize,80); });
+  } else {
+    setTimeout(resize,80);
+  }
 }
 function startWithQuizJSON(f){
   const r=new FileReader();
@@ -1183,8 +1205,13 @@ function nativeBrowse(inp){
 $('#sb-start').addEventListener('click',()=>{
   $('#sb-welcome').classList.add('hide');
   try{ fsEl.focus && fsEl.focus({preventScroll:true}); }catch(_){ try{ fsEl.focus && fsEl.focus(); }catch(__){} }
-  // Start directly in fullscreen; if the browser denies it, keep the board usable.
-  enterFS().then(()=>setTimeout(resize,80)).catch(()=>{ setTimeout(resize,80); });
+  if(wantsFullscreen()){
+    // Start in fullscreen; if the browser denies it, keep the board usable.
+    enterFS().then(()=>setTimeout(resize,80)).catch(()=>{ setTimeout(resize,80); });
+  } else {
+    // Normal (windowed) mode — just show the board without entering fullscreen
+    setTimeout(resize,80);
+  }
 });
 
 /* ============================== board file open ============================== */
