@@ -238,17 +238,7 @@ var MARKUP = `
         <button class="sb-lang-btn" data-lang="both" id="sb-welcome-lang-both" style="padding:5px 14px;border-radius:6px;border:1.5px solid #e2e8f0;background:#f8fafc;color:#475569;font-weight:600;font-size:13px;cursor:pointer;">EN + हि</button>
       </div>
       <input type="file" id="sb-welcome-file" accept=".pdf,.pptx,.json,.smartboard" class="sb-hidden">
-      <div id="sb-welcome-hint">Choose <b>Full Screen</b> for a distraction-free board, or <b>Normal Mode</b> to stay in the window</div>
-      <div id="sb-welcome-mode-row" style="display:flex;gap:8px;justify-content:center;margin-top:10px;flex-wrap:wrap;">
-        <label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:13px;color:#475569;user-select:none;">
-          <input type="radio" name="sb-launch-mode" id="sb-mode-fullscreen" value="fullscreen" checked style="accent-color:#3b82f6;width:15px;height:15px;">
-          <span>Full Screen</span>
-        </label>
-        <label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:13px;color:#475569;user-select:none;">
-          <input type="radio" name="sb-launch-mode" id="sb-mode-normal" value="normal" style="accent-color:#3b82f6;width:15px;height:15px;">
-          <span>Normal Mode</span>
-        </label>
-      </div>
+      <div id="sb-welcome-hint">Click <b>Start EduBoard</b> or drop a file to begin</div>
     </div>
   </div>
 </div>
@@ -916,11 +906,7 @@ function startWithFile(f){
   }
   $('#sb-welcome').classList.add('hide');
   try{ fsEl.focus && fsEl.focus({preventScroll:true}); }catch(_){ try{ fsEl.focus && fsEl.focus(); }catch(__){} }
-  if(wantsFullscreen()){
-    enterFS().then(()=>setTimeout(resize,80)).catch(()=>{ setTimeout(resize,80); });
-  } else {
-    setTimeout(resize,80);
-  }
+  setTimeout(resize,80);
   if(n.endsWith('.pdf')) importPDF(f); else importPPT(f);
 }
 // Welcome-screen-only quiz loader. Unlike the in-canvas "Open board file"
@@ -936,18 +922,10 @@ function startWithFile(f){
 //      question text and lettered options. The correct answer / explanation
 //      fields, if present, are intentionally NOT shown on the page, so the
 //      board can be used as a real worksheet rather than spoiling answers.
-function wantsFullscreen(){
-  var r=$('#sb-mode-normal');
-  return !(r && r.checked);
-}
 function enterAndShowBoard(){
   $('#sb-welcome').classList.add('hide');
   try{ fsEl.focus && fsEl.focus({preventScroll:true}); }catch(_){ try{ fsEl.focus && fsEl.focus(); }catch(__){} }
-  if(wantsFullscreen()){
-    enterFS().then(()=>setTimeout(resize,80)).catch(()=>{ setTimeout(resize,80); });
-  } else {
-    setTimeout(resize,80);
-  }
+  setTimeout(resize,80);
 }
 function startWithQuizJSON(f){
   const r=new FileReader();
@@ -1205,13 +1183,8 @@ function nativeBrowse(inp){
 $('#sb-start').addEventListener('click',()=>{
   $('#sb-welcome').classList.add('hide');
   try{ fsEl.focus && fsEl.focus({preventScroll:true}); }catch(_){ try{ fsEl.focus && fsEl.focus(); }catch(__){} }
-  if(wantsFullscreen()){
-    // Start in fullscreen; if the browser denies it, keep the board usable.
-    enterFS().then(()=>setTimeout(resize,80)).catch(()=>{ setTimeout(resize,80); });
-  } else {
-    // Normal (windowed) mode — just show the board without entering fullscreen
-    setTimeout(resize,80);
-  }
+  // Always open in normal (windowed) mode.
+  setTimeout(resize,80);
 });
 
 /* ============================== board file open ============================== */
@@ -1887,14 +1860,6 @@ function showLoad(m){loadTxt.textContent=m||'Loading…';loadEl.classList.add('s
 function hideLoad(){loadEl.classList.remove('show');}
 
 /* ============================== toolbar hide/show (double-tap) ============================== */
-// Inject the "double-tap to restore" hint pill into the board app layer
-(function(){
-  const hintEl = document.createElement('div');
-  hintEl.id = 'sb-ui-hint';
-  hintEl.textContent = 'Double-tap canvas to show toolbars';
-  $('#sb-app').appendChild(hintEl);
-})();
-
 let uiHidden = false;
 
 function toggleUI(){
@@ -1902,7 +1867,6 @@ function toggleUI(){
   // Enable animation after first toggle so the initial render has no flash
   root.classList.add('sb-ui-anim-ready');
   root.classList.toggle('sb-ui-hidden', uiHidden);
-  toast(uiHidden ? 'Toolbars hidden — double-tap to restore' : 'Toolbars visible');
 }
 
 // --- Double-tap detection (zero-latency, retroactive cancel) ---
