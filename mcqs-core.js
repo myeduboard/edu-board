@@ -53,7 +53,7 @@ function loadEditorBaseData(data, fileName) {
     currentViewTab = 'base';
 
     document.getElementById('editor-base-file-name').textContent =
-        `\u2713 ${editorBaseFileName} \u2014 ${data.posts.length} questions`;
+        `\u2713 ${editorBaseFileName} \u2014 ${aimcqCountLabel(data.posts)}`;
     document.getElementById('editor-base-file-name').classList.add('text-blue-700','font-bold');
     var _editorPromptEl = document.getElementById('editor-prompt');
     if (_editorPromptEl) _editorPromptEl.classList.add('hidden');
@@ -94,7 +94,7 @@ function figUnlinkDrive() {}
 
 // ==================== TABS ====================
 function switchTab(tab) {
-    const tabs = ['split','combine','quizbuilder','editor','figures','builder'];
+    const tabs = ['split','combine','quizbuilder','editor','figures','extractor','builder'];
     tabs.forEach(t => {
         document.getElementById(`tab-${t}`).classList.toggle('hidden', t !== tab);
         const btn = document.getElementById(`tab-btn-${t}`);
@@ -135,6 +135,7 @@ const COLORS = ['#6366f1','#f59e0b','#10b981','#ef4444','#8b5cf6','#06b6d4','#f9
 
 // ==================== UTILITIES ====================
 function downloadJSON(data, filename) {
+    aimcqWarnPassageIssues(data, filename);
     const blob = new Blob([JSON.stringify(aimcqCanonicalizeExport(data), null, 4)], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
@@ -167,6 +168,39 @@ var AIMCQ_META_KEY_ORDER = [
     '_aimcq_question_content_hi', '_aimcq_options_hi',
     '_aimcq_correct_answers', '_aimcq_explanation_hi'
 ];
+/* --------------------------------------------------------------------
+   PASSAGE SUPPORT (reading-comprehension groups)
+   --------------------------------------------------------------------
+   An aimcq bundle can contain `post_type: "passage"` posts plus normal
+   questions that link to them via meta keys:
+       question →  _aimcq_is_passage_question : "yes"
+                   _aimcq_passage_id          : "<passage post id>"
+       passage  →  _aimcq_passage_content_hi, _aimcq_passage_display_title_en,
+                   _aimcq_passage_display_title_hi,
+                   _aimcq_passage_translation_custom_prompt
+   These keys MUST survive every export, otherwise the aimcq engine can
+   no longer link questions to their passage and the passage box silently
+   disappears on the rendered quiz. The canonicalizers below therefore
+   preserve them explicitly (they are NOT "extras" like _aimcq_seo_robots).
+   -------------------------------------------------------------------- */
+var AIMCQ_QUESTION_PASSAGE_KEYS = ['_aimcq_is_passage_question', '_aimcq_passage_id'];
+var AIMCQ_PASSAGE_META_KEYS = [
+    '_aimcq_passage_content_hi', '_aimcq_passage_translation_custom_prompt',
+    '_aimcq_passage_display_title_en', '_aimcq_passage_display_title_hi'
+];
+
+function aimcqIsPassagePost(post) {
+    return !!post && post.post_type === 'passage';
+}
+function aimcqIsPassageQuestion(post) {
+    if (!post || post.post_type === 'passage') return false;
+    var m = post.meta_input || {};
+    return m._aimcq_is_passage_question === 'yes' || aimcqHasText(m._aimcq_passage_id);
+}
+function aimcqGetPassageId(post) {
+    var m = (post && post.meta_input) || {};
+    return m._aimcq_passage_id != null ? String(m._aimcq_passage_id) : '';
+}
 
 // One option object → exactly { text, image } in that order (extras dropped).
 function aimcqCanonicalizeOption(opt) {
@@ -211,11 +245,28 @@ function aimcqHasText(v) { return v != null && String(v).trim() !== ''; }
 // `promoteLang` names a secondary language (e.g. 'HI'), its translation
 // content is promoted into the base options/explanation before the
 // translation fields are dropped.
-function aimcqCanonicalizeMeta(meta, langCodes, promoteLang) {
+function aimcqCanonicalizeMeta(meta, langCodes, promoteLang, postType) {
     meta = (meta && typeof meta === 'object') ? meta : {};
     var keepHi = aimcqMetaKeepHindi(langCodes);
     var map = promoteLang ? AIMCQ_SECONDARY_FIELDS[promoteLang] : null;
     var out = {};
+
+    // ---- PASSAGE POSTS: emit the passage meta shape and stop. ----
+    // A passage post carries its text in post_title/post_content and its
+    // Hindi/translation variants + display titles in the passage keys.
+    // It has no options/answers of its own.
+    if (postType === 'passage') {
+        AIMCQ_PASSAGE_META_KEYS.forEach(function (k) {
+            out[k] = meta[k] != null ? meta[k] : '';
+        });
+        out._aimcq_explanation = meta._aimcq_explanation != null ? meta._aimcq_explanation : '';
+        if (keepHi) {
+            out._aimcq_title_hi = meta._aimcq_title_hi != null ? meta._aimcq_title_hi : '';
+            out._aimcq_question_content_hi = meta._aimcq_question_content_hi != null ? meta._aimcq_question_content_hi : '';
+            out._aimcq_explanation_hi = meta._aimcq_explanation_hi != null ? meta._aimcq_explanation_hi : '';
+        }
+        return out;
+    }
 
     var optsSrc = (map && Array.isArray(meta[map._aimcq_options]) && meta[map._aimcq_options].length)
         ? meta[map._aimcq_options] : meta._aimcq_options;
@@ -224,6 +275,14 @@ function aimcqCanonicalizeMeta(meta, langCodes, promoteLang) {
     var explSrc = (map && aimcqHasText(meta[map._aimcq_explanation]))
         ? meta[map._aimcq_explanation] : meta._aimcq_explanation;
     out._aimcq_explanation = explSrc != null ? explSrc : '';
+
+    // ---- QUESTION → PASSAGE LINKAGE: always preserved when present. ----
+    // Without these two keys the aimcq engine cannot attach the question to
+    // its reading passage, so the passage box is never displayed.
+    if (meta._aimcq_is_passage_question === 'yes' || aimcqHasText(meta._aimcq_passage_id)) {
+        out._aimcq_is_passage_question = meta._aimcq_is_passage_question === 'yes' ? 'yes' : 'yes';
+        out._aimcq_passage_id = meta._aimcq_passage_id != null ? String(meta._aimcq_passage_id) : '';
+    }
 
     if (keepHi) {
         out._aimcq_title_hi = meta._aimcq_title_hi != null ? meta._aimcq_title_hi : '';
@@ -245,21 +304,86 @@ function aimcqCanonicalizeMeta(meta, langCodes, promoteLang) {
 function aimcqCanonicalizePost(post, langCodes, promoteLang) {
     if (!post || typeof post !== 'object') return post;
     var meta0 = (post.meta_input && typeof post.meta_input === 'object') ? post.meta_input : {};
+    var isPassage = post.post_type === 'passage';
     var map = promoteLang ? AIMCQ_SECONDARY_FIELDS[promoteLang] : null;
     var out = {};
     if ('id' in post) out.id = post.id;
     out.post_author  = post.post_author != null ? post.post_author : 1;
     out.post_date    = post.post_date != null ? post.post_date : '';
-    out.post_title   = (map && aimcqHasText(meta0[map.post_title]))
-        ? meta0[map.post_title] : (post.post_title != null ? post.post_title : '');
-    out.post_content = (map && aimcqHasText(meta0[map.post_content]))
-        ? meta0[map.post_content] : (post.post_content != null ? post.post_content : '');
+    if (isPassage) {
+        // Passage posts carry the passage text itself in post_title/post_content.
+        // When promoting to Hindi-only, prefer the passage's Hindi content field.
+        var hiPassage = (promoteLang === 'HI' && aimcqHasText(meta0._aimcq_passage_content_hi))
+            ? meta0._aimcq_passage_content_hi : null;
+        out.post_title   = hiPassage != null ? hiPassage : (post.post_title != null ? post.post_title : '');
+        out.post_content = hiPassage != null ? hiPassage : (post.post_content != null ? post.post_content : '');
+    } else {
+        out.post_title   = (map && aimcqHasText(meta0[map.post_title]))
+            ? meta0[map.post_title] : (post.post_title != null ? post.post_title : '');
+        out.post_content = (map && aimcqHasText(meta0[map.post_content]))
+            ? meta0[map.post_content] : (post.post_content != null ? post.post_content : '');
+    }
     out.post_status  = post.post_status != null ? post.post_status : 'publish';
     out.post_type    = post.post_type != null ? post.post_type : 'question';
-    out.meta_input   = aimcqCanonicalizeMeta(post.meta_input, langCodes, promoteLang);
+    out.meta_input   = aimcqCanonicalizeMeta(post.meta_input, langCodes, promoteLang, out.post_type);
     out.taxonomies   = (post.taxonomies && typeof post.taxonomies === 'object') ? post.taxonomies : {};
     out.embedded_media = Array.isArray(post.embedded_media) ? post.embedded_media : [];
     return out;
+}
+
+/* --------------------------------------------------------------------
+   PASSAGE INTEGRITY CHECK
+   --------------------------------------------------------------------
+   Returns an array of human-readable warning strings for a bundle:
+     - questions that link to a passage id that is not in the bundle
+       (the aimcq engine can never show their passage box), and
+     - passage posts that no question links to (dead weight; the engine
+       will never display them).
+   Called at export time so the user is told BEFORE uploading a JSON
+   that would render without its passage.
+   -------------------------------------------------------------------- */
+function aimcqValidatePassages(data) {
+    var warnings = [];
+    if (!data || !Array.isArray(data.posts)) return warnings;
+    var passageIds = {};
+    data.posts.forEach(function (p) {
+        if (aimcqIsPassagePost(p) && p.id != null) passageIds[String(p.id)] = true;
+    });
+    var linkedTo = {};
+    var broken = {};
+    data.posts.forEach(function (p) {
+        if (!aimcqIsPassageQuestion(p)) return;
+        var pid = aimcqGetPassageId(p);
+        if (!pid) { warnings.push('Question id ' + p.id + ' is marked as a passage question but has no _aimcq_passage_id.'); return; }
+        if (passageIds[pid]) linkedTo[pid] = true;
+        else { broken[pid] = broken[pid] || []; broken[pid].push(p.id); }
+    });
+    Object.keys(broken).forEach(function (pid) {
+        warnings.push('Questions ' + broken[pid].join(', ') + ' link to passage id ' + pid
+            + ' but that passage post is NOT in this file — the passage will not display in the quiz.');
+    });
+    Object.keys(passageIds).forEach(function (pid) {
+        if (!linkedTo[pid]) warnings.push('Passage id ' + pid + ' has no linked questions in this file and will never be shown.');
+    });
+    return warnings;
+}
+
+// Toast any passage warnings for a bundle about to be exported/committed.
+function aimcqWarnPassageIssues(data, context) {
+    try {
+        var ws = aimcqValidatePassages(data);
+        if (ws.length && typeof showToast === 'function') {
+            showToast('Passage Warning' + (context ? ' — ' + context : ''), ws.join(' '), 'error');
+        }
+        return ws;
+    } catch (e) { return []; }
+}
+
+// Count helper: "25 questions + 1 passage" style label for toasts/stats.
+function aimcqCountLabel(posts) {
+    var q = 0, p = 0;
+    (posts || []).forEach(function (x) { if (aimcqIsPassagePost(x)) p++; else q++; });
+    return p ? (q + ' questions + ' + p + ' passage' + (p > 1 ? 's' : '')) : (q + ' questions');
 }
 
 /* ====================================================================
@@ -507,7 +631,7 @@ function handleSplitFileSelection(file) {
         try {
             splitSourceData = JSON.parse(e.target.result);
             if (!isValidAimcqJSON(splitSourceData)) throw new Error("Missing 'posts' array.");
-            showToast("File Loaded", `Found ${splitSourceData.posts.length} questions.`, "success");
+            showToast("File Loaded", `Found ${aimcqCountLabel(splitSourceData.posts)}.`, "success");
         } catch(err) { splitSourceData = null; showToast("Parse Error", err.message, "error"); }
     };
     reader.readAsText(file);
@@ -521,17 +645,52 @@ document.getElementById('btn-split').addEventListener('click', () => {
     generatedSplitChunks = [];
     let part = 1;
     const base = splitSourceFile.name.replace('.json','');
-    for (let i = 0; i < splitSourceData.posts.length; i += chunkSize) {
-        const posts = splitSourceData.posts.slice(i, i + chunkSize);
+
+    /* ---- PASSAGE-AWARE SPLIT ----
+       A passage post and every question linked to it must land in the SAME
+       output file, otherwise the aimcq engine cannot show the passage box.
+       We first bucket posts into indivisible groups (a passage + its linked
+       questions = one group; every other post = its own group), then fill
+       chunks group-by-group. `chunkSize` counts QUESTIONS (passage posts
+       ride along for free). A chunk may exceed chunkSize only when a single
+       passage group is bigger than chunkSize — splitting it would break it. */
+    const posts = splitSourceData.posts;
+    const passageGroups = {};   // passage id -> group array (shared reference)
+    const groupOrder = [];      // groups in first-appearance order
+    posts.forEach(p => {
+        let pid = null;
+        if (aimcqIsPassagePost(p) && p.id != null) pid = String(p.id);
+        else if (aimcqIsPassageQuestion(p)) pid = aimcqGetPassageId(p) || null;
+        if (pid) {
+            if (!passageGroups[pid]) { passageGroups[pid] = []; groupOrder.push(passageGroups[pid]); }
+            passageGroups[pid].push(p);
+        } else {
+            groupOrder.push([p]);
+        }
+    });
+    const questionCount = g => g.reduce((n, p) => n + (aimcqIsPassagePost(p) ? 0 : 1), 0);
+
+    let chunkPosts = [], chunkQ = 0;
+    const flush = () => {
+        if (!chunkPosts.length) return;
         generatedSplitChunks.push({
             filename: `${base}_part${part}.json`,
-            data: { version: splitSourceData.version||"1.7.0", export_type: splitSourceData.export_type||"single", terms: splitSourceData.terms||[], posts },
-            count: posts.length
+            data: { version: splitSourceData.version||"1.7.0", export_type: splitSourceData.export_type||"single", terms: splitSourceData.terms||[], posts: chunkPosts },
+            count: chunkQ
         });
-        part++;
-    }
+        part++; chunkPosts = []; chunkQ = 0;
+    };
+    groupOrder.forEach(g => {
+        const gq = questionCount(g);
+        if (chunkQ > 0 && chunkQ + gq > chunkSize) flush();
+        chunkPosts = chunkPosts.concat(g);
+        chunkQ += gq;
+        if (chunkQ >= chunkSize) flush();
+    });
+    flush();
+
     renderSplitResults();
-    showToast("Success", `Split into ${generatedSplitChunks.length} files.`, "success");
+    showToast("Success", `Split into ${generatedSplitChunks.length} files (passages kept with their questions).`, "success");
 });
 
 function renderSplitResults() {
@@ -693,7 +852,7 @@ function loadEditorBase(file) {
             }
             const nameEl = document.getElementById('editor-base-file-name');
             if (nameEl) {
-                nameEl.textContent = `\u2713 ${file.name} \u2014 ${data.posts.length} questions`;
+                nameEl.textContent = `\u2713 ${file.name} \u2014 ${aimcqCountLabel(data.posts)}`;
                 nameEl.classList.add('text-blue-700','font-bold');
             }
             const prompt = document.getElementById('editor-prompt');
@@ -712,7 +871,7 @@ function loadEditorBase(file) {
             editorApplyLanguageUI();
             renderEditorWorkspace();
             if (typeof refreshEditorGitHubButtons === 'function') refreshEditorGitHubButtons();
-            showToast("Base Loaded", `${data.posts.length} questions ready.`, "success");
+            showToast("Base Loaded", `${aimcqCountLabel(data.posts)} ready.`, "success");
         } catch (err) {
             console.error('Editor render error:', err);
             showToast("Editor Error",
@@ -1148,6 +1307,22 @@ function buildQfvCard(opts) {
     numBadge.textContent = kind === 'base' ? `Q #${opts.idx + 1}` : `Src ${opts.si+1} · #${opts.pidx+1}`;
     badgesRow.appendChild(numBadge);
 
+    // ---- Passage badges: make passage posts and their linked questions
+    // visually distinct so users don't unknowingly break the group. ----
+    if (aimcqIsPassagePost(post)) {
+        const pb = document.createElement('span');
+        pb.className = 'qfv-status-badge';
+        pb.style.cssText = 'background:#f3e8ff;color:#7c3aed;border:1px solid #ddd6fe;';
+        pb.innerHTML = '<i data-lucide="book-open" class="w-3 h-3"></i> Passage' + (post.id != null ? ` (id ${post.id})` : '');
+        badgesRow.appendChild(pb);
+    } else if (aimcqIsPassageQuestion(post)) {
+        const pb = document.createElement('span');
+        pb.className = 'qfv-status-badge';
+        pb.style.cssText = 'background:#ede9fe;color:#6d28d9;border:1px solid #ddd6fe;';
+        pb.innerHTML = '<i data-lucide="link" class="w-3 h-3"></i> Passage Q → ' + escapeHtml(aimcqGetPassageId(post));
+        badgesRow.appendChild(pb);
+    }
+
     if (isSelected && kind === 'base') {
         const b = document.createElement('span');
         b.className = 'qfv-status-badge qfv-status-del';
@@ -1360,6 +1535,56 @@ function attachBaseCheckboxListeners() {
             const idx = parseInt(e.target.getAttribute('data-idx'));
             if (e.target.checked) editorDeleteSet.add(idx);
             else editorDeleteSet.delete(idx);
+
+            // ---- Keep passage groups consistent on delete/undelete. ----
+            // Deleting a passage post orphans its questions (the engine can
+            // then never show the passage), so the whole group moves together:
+            //   - toggle a PASSAGE post  -> its linked questions follow;
+            //   - toggle a PASSAGE QUESTION -> if it was the last remaining
+            //     linked question, the (now-useless) passage post follows too,
+            //     and undeleting a question brings the passage post back.
+            const post = editorBaseData.posts[idx];
+            const affected = [];
+            if (post && aimcqIsPassagePost(post) && post.id != null) {
+                const pid = String(post.id);
+                editorBaseData.posts.forEach((p, i) => {
+                    if (i !== idx && aimcqIsPassageQuestion(p) && aimcqGetPassageId(p) === pid) {
+                        if (e.target.checked ? !editorDeleteSet.has(i) : editorDeleteSet.has(i)) {
+                            if (e.target.checked) editorDeleteSet.add(i); else editorDeleteSet.delete(i);
+                            affected.push(i);
+                        }
+                    }
+                });
+                if (affected.length) {
+                    showToast('Passage Group', (e.target.checked
+                        ? `Passage deleted — its ${affected.length} linked question(s) were marked for deletion too.`
+                        : `Passage restored — its ${affected.length} linked question(s) were restored too.`), 'success');
+                }
+            } else if (post && aimcqIsPassageQuestion(post)) {
+                const pid = aimcqGetPassageId(post);
+                let passageIdx = -1, liveLinked = 0;
+                editorBaseData.posts.forEach((p, i) => {
+                    if (aimcqIsPassagePost(p) && String(p.id) === pid) passageIdx = i;
+                    else if (i !== idx && aimcqIsPassageQuestion(p) && aimcqGetPassageId(p) === pid && !editorDeleteSet.has(i)) liveLinked++;
+                });
+                if (passageIdx !== -1) {
+                    if (e.target.checked && liveLinked === 0 && !editorDeleteSet.has(passageIdx)) {
+                        editorDeleteSet.add(passageIdx); affected.push(passageIdx);
+                        showToast('Passage Group', 'Last linked question deleted — the passage post was marked for deletion too.', 'success');
+                    } else if (!e.target.checked && editorDeleteSet.has(passageIdx)) {
+                        editorDeleteSet.delete(passageIdx); affected.push(passageIdx);
+                        showToast('Passage Group', 'Passage question restored — its passage post was restored too.', 'success');
+                    }
+                }
+            }
+            // Re-render the whole panel if the toggle cascaded to other cards.
+            if (affected.length) {
+                renderBasePanel();
+                updateEditorStats();
+                updateTabCounts();
+                updateLiveJsonPreview();
+                return;
+            }
 
             // Rebuild this card in place so the badge + border state update cleanly
             const card = e.target.closest('.qfv-card');
@@ -1610,8 +1835,16 @@ function buildRichEditor(wrap) {
         'en-explanation': 'Explanation / solution steps in English (optional)…',
         'hi-question':    'प्रश्न हिन्दी में…',
         'hi-explanation': 'व्याख्या / हल के चरण हिन्दी में (वैकल्पिक)…',
+        'qx-en-question':    'Extracted question text…',
+        'qx-en-explanation': 'Explanation / solution steps…',
+        'qx-hi-question':    'निकाला गया प्रश्न…',
+        'qx-hi-explanation': 'व्याख्या / हल के चरण…',
     };
-    const placeholder = placeholders[field] || '';
+    // Passage mode uses indexed prefixes (qx-en0-…, qx-hi2-…); strip the index
+    // so those editors inherit the same placeholders as the single-question ones.
+    const placeholder = placeholders[field]
+        || placeholders[String(field).replace(/^qx-(en|hi)\d+-/, 'qx-$1-')]
+        || '';
     const savedH = (reRegistry[field] && reRegistry[field].height) || RE_DEFAULT_HEIGHT;
 
     wrap.innerHTML = `
@@ -1655,46 +1888,92 @@ function buildRichEditor(wrap) {
           </div>
         </div>
       </div>
-      <div class="re-toolbar">
-        <select class="re-heading-select" title="Paragraph / Heading">
+      <div class="re-toolbar re-toolbar-blogger">
+        <button type="button" class="re-tool-btn" data-cmd="undo" title="Undo (Ctrl+Z)">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M9 14L4 9l5-5"/><path d="M4 9h11a5 5 0 015 5v1a5 5 0 01-5 5h-4"/></svg>
+        </button>
+        <button type="button" class="re-tool-btn" data-cmd="redo" title="Redo (Ctrl+Y)">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M15 14l5-5-5-5"/><path d="M20 9H9a5 5 0 00-5 5v1a5 5 0 005 5h4"/></svg>
+        </button>
+        <div class="re-tool-sep"></div>
+        <select class="re-font-select re-bar-select" title="Font">
+          <option value="">Font</option>
+          <option value="Arial, sans-serif">Arial</option>
+          <option value="Courier New, monospace">Courier</option>
+          <option value="Georgia, serif">Georgia</option>
+          <option value="Helvetica, sans-serif">Helvetica</option>
+          <option value="Times New Roman, serif">Times</option>
+          <option value="Trebuchet MS, sans-serif">Trebuchet</option>
+          <option value="Verdana, sans-serif">Verdana</option>
+        </select>
+        <select class="re-size-select re-bar-select" title="Font size">
+          <option value="">Size</option>
+          <option value="1">Smallest</option>
+          <option value="2">Small</option>
+          <option value="3">Normal</option>
+          <option value="5">Large</option>
+          <option value="7">Largest</option>
+        </select>
+        <select class="re-heading-select re-bar-select" title="Paragraph / Heading">
           <option value="div">Normal</option>
-          <option value="h1">Heading 1</option>
-          <option value="h2">Heading 2</option>
-          <option value="h3">Heading 3</option>
-          <option value="h4">Heading 4</option>
-          <option value="h5">Heading 5</option>
+          <option value="h2">Heading</option>
+          <option value="h3">Subheading</option>
+          <option value="h4">Minor heading</option>
+          <option value="p">Paragraph</option>
+          <option value="blockquote">Quote</option>
         </select>
         <div class="re-tool-sep"></div>
-        <span class="re-tool-label">FORMAT</span>
         <button type="button" class="re-tool-btn" data-cmd="bold" title="Bold (Ctrl+B)"><b>B</b></button>
         <button type="button" class="re-tool-btn" data-cmd="italic" title="Italic (Ctrl+I)"><i style="font-style:italic">I</i></button>
         <button type="button" class="re-tool-btn" data-cmd="underline" title="Underline (Ctrl+U)"><u>U</u></button>
         <button type="button" class="re-tool-btn" data-cmd="strikeThrough" title="Strikethrough"><s>S</s></button>
+        <div class="re-color-wrap">
+          <button type="button" class="re-tool-btn re-color-btn re-fore-btn" title="Text colour">
+            <span class="re-color-A">A</span><span class="re-color-bar re-fore-bar" style="background:#dc2626"></span>
+          </button>
+          <div class="re-color-dropdown re-fore-drop hidden"></div>
+        </div>
+        <div class="re-color-wrap">
+          <button type="button" class="re-tool-btn re-color-btn re-back-btn" title="Text background colour">
+            <span class="re-color-A" style="background:#fde047;border-radius:2px;padding:0 2px;">A</span><span class="re-color-bar re-back-bar" style="background:#fde047"></span>
+          </button>
+          <div class="re-color-dropdown re-back-drop hidden"></div>
+        </div>
         <div class="re-tool-sep"></div>
-        <span class="re-tool-label">SCRIPT</span>
         <button type="button" class="re-tool-btn" data-cmd="superscript" title="Superscript" style="font-size:10px;letter-spacing:-0.5px">X²</button>
         <button type="button" class="re-tool-btn" data-cmd="subscript" title="Subscript" style="font-size:10px;letter-spacing:-0.5px">X₂</button>
         <div class="re-tool-sep"></div>
-        <span class="re-tool-label">LIST</span>
-        <button type="button" class="re-tool-btn" data-cmd="insertUnorderedList" title="Bullet list">
-          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="9" y1="6" x2="20" y2="6"/><line x1="9" y1="12" x2="20" y2="12"/><line x1="9" y1="18" x2="20" y2="18"/><circle cx="4" cy="6" r="1.5" fill="currentColor"/><circle cx="4" cy="12" r="1.5" fill="currentColor"/><circle cx="4" cy="18" r="1.5" fill="currentColor"/></svg>
-        </button>
-        <button type="button" class="re-tool-btn" data-cmd="insertOrderedList" title="Numbered list">
-          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="10" y1="6" x2="21" y2="6"/><line x1="10" y1="12" x2="21" y2="12"/><line x1="10" y1="18" x2="21" y2="18"/><path d="M4 6h1v4" stroke-linecap="round"/><path d="M4 10h2" stroke-linecap="round"/><path d="M4 14h1.5a.5.5 0 010 1H4a.5.5 0 000 1h2" stroke-linecap="round"/></svg>
-        </button>
-        <div class="re-tool-sep"></div>
-        <span class="re-tool-label">INSERT</span>
         <button type="button" class="re-tool-btn re-tool-link" title="Insert / edit link">
           <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M10 13a5 5 0 007.54.54l3-3a5 5 0 00-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 00-7.54-.54l-3 3a5 5 0 007.07 7.07l1.71-1.71"/></svg>
-        </button>
-        <button type="button" class="re-tool-btn re-tool-table" title="Insert table">
-          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18M3 15h18M9 3v18M15 3v18"/></svg>
         </button>
         <button type="button" class="re-tool-btn re-tool-image" title="Insert image URL">
           <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="M21 15l-5-5L5 21"/></svg>
         </button>
+        <button type="button" class="re-tool-btn re-tool-table" title="Insert table">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18M3 15h18M9 3v18M15 3v18"/></svg>
+        </button>
         <div class="re-tool-sep"></div>
-        <button type="button" class="re-tool-btn" data-cmd="removeFormat" title="Clear formatting" style="font-size:10px">
+        <button type="button" class="re-tool-btn" data-cmd="justifyLeft" title="Align left">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="14" y2="12"/><line x1="3" y1="18" x2="18" y2="18"/></svg>
+        </button>
+        <button type="button" class="re-tool-btn" data-cmd="justifyCenter" title="Align centre">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="3" y1="6" x2="21" y2="6"/><line x1="6" y1="12" x2="18" y2="12"/><line x1="4" y1="18" x2="20" y2="18"/></svg>
+        </button>
+        <button type="button" class="re-tool-btn" data-cmd="justifyRight" title="Align right">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="3" y1="6" x2="21" y2="6"/><line x1="10" y1="12" x2="21" y2="12"/><line x1="6" y1="18" x2="21" y2="18"/></svg>
+        </button>
+        <button type="button" class="re-tool-btn" data-cmd="justifyFull" title="Justify">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
+        </button>
+        <div class="re-tool-sep"></div>
+        <button type="button" class="re-tool-btn" data-cmd="insertOrderedList" title="Numbered list">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="10" y1="6" x2="21" y2="6"/><line x1="10" y1="12" x2="21" y2="12"/><line x1="10" y1="18" x2="21" y2="18"/><path d="M4 6h1v4" stroke-linecap="round"/><path d="M4 10h2" stroke-linecap="round"/><path d="M4 14h1.5a.5.5 0 010 1H4a.5.5 0 000 1h2" stroke-linecap="round"/></svg>
+        </button>
+        <button type="button" class="re-tool-btn" data-cmd="insertUnorderedList" title="Bulleted list">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="9" y1="6" x2="20" y2="6"/><line x1="9" y1="12" x2="20" y2="12"/><line x1="9" y1="18" x2="20" y2="18"/><circle cx="4" cy="6" r="1.5" fill="currentColor"/><circle cx="4" cy="12" r="1.5" fill="currentColor"/><circle cx="4" cy="18" r="1.5" fill="currentColor"/></svg>
+        </button>
+        <div class="re-tool-sep"></div>
+        <button type="button" class="re-tool-btn" data-cmd="removeFormat" title="Remove formatting">
           <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M6 12h12M4 6h10M8 18h8"/><line x1="19" y1="5" x2="5" y2="19" stroke="#ef4444" stroke-width="2"/></svg>
         </button>
       </div>
@@ -1730,12 +2009,74 @@ function buildRichEditor(wrap) {
         tab.addEventListener('click', () => switchReMode(field, tab.getAttribute('data-mode'), wrap));
     });
 
-    // --- Heading select ---
+    // --- Heading / paragraph select (includes Quote like Blogger) ---
     const headingSelect = toolbar.querySelector('.re-heading-select');
     headingSelect.addEventListener('change', () => {
         compose.focus();
         document.execCommand('formatBlock', false, headingSelect.value);
         updateToolbarState(toolbar, compose);
+    });
+
+    // --- Font family & size (Blogger-style) ---
+    const fontSelect = toolbar.querySelector('.re-font-select');
+    if (fontSelect) fontSelect.addEventListener('change', () => {
+        if (!fontSelect.value) return;
+        compose.focus();
+        try { document.execCommand('styleWithCSS', false, true); } catch (e) {}
+        document.execCommand('fontName', false, fontSelect.value);
+        fontSelect.value = '';
+    });
+    const sizeSelect = toolbar.querySelector('.re-size-select');
+    if (sizeSelect) sizeSelect.addEventListener('change', () => {
+        if (!sizeSelect.value) return;
+        compose.focus();
+        document.execCommand('fontSize', false, sizeSelect.value);
+        sizeSelect.value = '';
+    });
+
+    // --- Text colour / highlight colour (Blogger-style palette grid) ---
+    const RE_PALETTE = [
+        '#000000','#444444','#666666','#999999','#cccccc','#eeeeee','#f3f3f3','#ffffff',
+        '#ff0000','#ff9900','#ffff00','#00ff00','#00ffff','#0000ff','#9900ff','#ff00ff',
+        '#e06666','#f6b26b','#ffd966','#93c47d','#76a5af','#6fa8dc','#8e7cc3','#c27ba0',
+        '#cc0000','#e69138','#f1c232','#6aa84f','#45818e','#3d85c6','#674ea7','#a64d79',
+        '#990000','#b45309','#bf9000','#38761d','#134f5c','#0b5394','#351c75','#741b47',
+    ];
+    function wireColorPicker(btnSel, dropSel, barSel, cmd) {
+        const btn = toolbar.querySelector(btnSel);
+        const drop = toolbar.querySelector(dropSel);
+        const bar = toolbar.querySelector(barSel);
+        if (!btn || !drop) return;
+        drop.innerHTML = RE_PALETTE.map(c =>
+            `<button type="button" class="re-swatch" data-color="${c}" style="background:${c}" title="${c}"></button>`).join('')
+            + `<div class="re-swatch-footer"><input type="color" class="re-swatch-custom" title="Custom colour"><span>Custom</span>`
+            + (cmd !== 'foreColor' ? `<button type="button" class="re-swatch-none">None</button>` : '') + `</div>`;
+        const apply = (color) => {
+            drop.classList.add('hidden');
+            compose.focus();
+            try { document.execCommand('styleWithCSS', false, true); } catch (e) {}
+            document.execCommand(cmd, false, color);
+            if (bar) bar.style.background = color === 'transparent' ? '#e5e7eb' : color;
+            updateToolbarState(toolbar, compose);
+        };
+        btn.addEventListener('mousedown', e => {
+            e.preventDefault();
+            document.querySelectorAll('.re-color-dropdown').forEach(d => { if (d !== drop) d.classList.add('hidden'); });
+            drop.classList.toggle('hidden');
+        });
+        drop.querySelectorAll('.re-swatch').forEach(sw =>
+            sw.addEventListener('mousedown', e => { e.preventDefault(); apply(sw.getAttribute('data-color')); }));
+        const custom = drop.querySelector('.re-swatch-custom');
+        if (custom) custom.addEventListener('change', () => apply(custom.value));
+        const none = drop.querySelector('.re-swatch-none');
+        if (none) none.addEventListener('mousedown', e => { e.preventDefault(); apply('transparent'); });
+    }
+    wireColorPicker('.re-fore-btn', '.re-fore-drop', '.re-fore-bar', 'foreColor');
+    wireColorPicker('.re-back-btn', '.re-back-drop', '.re-back-bar', 'hiliteColor');
+    document.addEventListener('click', e => {
+        if (!e.target.closest || !e.target.closest('.re-color-wrap')) {
+            wrap.querySelectorAll('.re-color-dropdown').forEach(d => d.classList.add('hidden'));
+        }
     });
 
     // --- Toolbar commands ---
@@ -2170,28 +2511,109 @@ function switchReMode(field, mode, wrap) {
 }
 
 // Pretty-print HTML: every tag on its own line with indent tracking
+// Blogger-style structured HTML source: block tags on their own lines with
+// 2-space indentation, one line per <br>, short leaf blocks kept compact.
+// Attribute-carrying <span>s (colours/fonts from the toolbar) and <br> line
+// structure are PRESERVED — only editing junk (bare wrappers, &nbsp;) is
+// normalised away.
+const RE_BLOCK_TAGS = 'p|div|h[1-6]|ul|ol|li|table|thead|tbody|tfoot|tr|td|th|blockquote|figure|figcaption|pre|section|article';
+
 function formatHtmlSource(html) {
     if (!html) return '';
-    return html
-        .replace(/<div><br\s*\/?><\/div>/gi, '')
-        .replace(/<div>([\s\S]*?)<\/div>/gi, '$1')
-        .replace(/<br\s*\/?>/gi, '')
-        .replace(/<span[^>]*>([\s\S]*?)<\/span>/gi, '$1')
-        .replace(/&nbsp;/gi, ' ')
-        .trim();
+    let src = String(html)
+        .replace(/<div><br\s*\/?><\/div>/gi, '<br>')
+        .replace(/<span>([\s\S]*?)<\/span>/gi, '$1')            // only attribute-less spans
+        .replace(/&nbsp;/gi, ' ');
+    // Unwrap contenteditable's bare <div> line wrappers into <br> lines
+    // (attribute-carrying divs are left untouched). Loop for nesting.
+    for (let i = 0; i < 6; i++) {
+        const next = src.replace(/<div>([\s\S]*?)<\/div>/gi, '$1<br>');
+        if (next === src) break;
+        src = next;
+    }
+    src = src.replace(/(?:\s*<br\s*\/?>\s*)+$/i, '').trim();    // no trailing blank lines
+    return prettyHtmlSource(src);
+}
+
+function prettyHtmlSource(src) {
+    if (!src) return '';
+    const B = '(?:' + RE_BLOCK_TAGS + ')';
+    let t = src
+        .replace(new RegExp('\\s*(<' + B + '(?=[\\s>])[^>]*>)', 'gi'), '\n$1')
+        .replace(new RegExp('(<' + B + '(?=[\\s>])[^>]*>)\\s*(?=<)', 'gi'), '$1\n')
+        .replace(new RegExp('\\s*(</' + B + '>)', 'gi'), '\n$1')
+        .replace(new RegExp('(</' + B + '>)\\s*', 'gi'), '$1\n')
+        .replace(/(<br\s*\/?>)\s*/gi, '$1\n');
+
+    const lines = t.split('\n').map(l => l.trim()).filter(l => l !== '');
+    const openRe = new RegExp('^<' + B + '(?=[\\s>])', 'i');
+    const closeRe = new RegExp('^</' + B + '>', 'i');
+    const selfContained = new RegExp('^<(' + B + ')(?=[\\s>])[^>]*>[\\s\\S]*</\\1>$', 'i');
+
+    let depth = 0;
+    const indented = [];
+    for (const line of lines) {
+        if (closeRe.test(line)) depth = Math.max(0, depth - 1);
+        indented.push('  '.repeat(depth) + line);
+        if (openRe.test(line) && !selfContained.test(line)) depth++;
+    }
+
+    // Compact short leaf blocks (content may contain inline tags like <b>):
+    //   <li> / <b>x</b> y / </li>  →  <li><b>x</b> y</li>
+    //   <td>text / </td>           →  <td>text</td>
+    const blockish = new RegExp('</?' + B + '(?=[\\s>/])', 'i');
+    const out = [];
+    for (let i = 0; i < indented.length; i++) {
+        const a = indented[i], b = indented[i + 1], c = indented[i + 2];
+        const at = a.trim();
+        if (b !== undefined && c !== undefined) {
+            const bt = b.trim(), ct = c.trim();
+            const m = at.match(new RegExp('^<(' + B + ')(?=[\\s>])[^>]*>$', 'i'));
+            if (m && ct.toLowerCase() === '</' + m[1].toLowerCase() + '>' &&
+                !blockish.test(bt) && !/^<br/i.test(bt) &&
+                (at.length + bt.length + ct.length) <= 90) {
+                out.push(a + bt + ct);
+                i += 2;
+                continue;
+            }
+        }
+        if (b !== undefined) {
+            const bt = b.trim();
+            const m2 = at.match(new RegExp('^<(' + B + ')(?=[\\s>])[^>]*>', 'i'));
+            if (m2) {
+                const rest = at.slice(at.indexOf('>') + 1);
+                if (rest && !blockish.test(rest) &&
+                    bt.toLowerCase() === '</' + m2[1].toLowerCase() + '>' &&
+                    (at.length + bt.length) <= 90) {
+                    out.push(a + bt);
+                    i += 1;
+                    continue;
+                }
+            }
+        }
+        out.push(a);
+    }
+    return out.join('\n');
 }
 
 function updateToolbarState(toolbar, compose) {
     ['bold','italic','underline','strikeThrough','superscript','subscript',
      'insertUnorderedList','insertOrderedList'].forEach(cmd => {
         const btn = toolbar.querySelector(`[data-cmd="${cmd}"]`);
-        if (btn) btn.classList.toggle('active', document.queryCommandState(cmd));
+        if (!btn) return;
+        let on = false;
+        try { on = document.queryCommandState && document.queryCommandState(cmd); } catch (e) {}
+        btn.classList.toggle('active', !!on);
     });
-    // Sync heading select
+    // Sync heading select (Blogger option set)
     const sel = toolbar.querySelector('.re-heading-select');
     if (sel) {
-        const block = document.queryCommandValue('formatBlock').toLowerCase().replace(/^<|>$/g, '') || 'div';
-        sel.value = ['h1','h2','h3','h4','h5'].includes(block) ? block : 'div';
+        let block = 'div';
+        try {
+            block = ((document.queryCommandValue && document.queryCommandValue('formatBlock')) || 'div')
+                .toLowerCase().replace(/^<|>$/g, '') || 'div';
+        } catch (e) {}
+        sel.value = ['h2','h3','h4','p','blockquote'].includes(block) ? block : 'div';
     }
 }
 
@@ -2255,6 +2677,7 @@ function openQEditor(idx) {
 
     editorConfigureQEditorLangUI(bilingual, soleLang);
     switchQEditorLang('en');
+    if (typeof qeAiOnModalOpen === 'function') qeAiOnModalOpen(enOptions.length);
     document.getElementById('q-editor-modal').classList.remove('hidden');
     document.body.style.overflow = 'hidden';
     lucide.createIcons();
@@ -2589,7 +3012,7 @@ function figLoadJsonData(data, fileName, source) {
     figState.slots = {};
 
     document.getElementById('fig-json-name').textContent =
-        `\u2713 ${figState.fileName} \u2014 ${data.posts.length} questions`;
+        `\u2713 ${figState.fileName} \u2014 ${aimcqCountLabel(data.posts)}`;
     document.getElementById('fig-json-name').classList.add('text-indigo-700', 'font-bold');
     document.getElementById('fig-step-pdf').classList.remove('hidden');
     document.getElementById('fig-step-save').classList.remove('hidden');
@@ -2601,7 +3024,7 @@ function figLoadJsonData(data, fileName, source) {
     figPopulateTopics();
     figRenderQuestionList();
     lucide.createIcons();
-    showToast('JSON Loaded', `${data.posts.length} questions ready for figure updates.`, 'success');
+    showToast('JSON Loaded', `${aimcqCountLabel(data.posts)} ready for figure updates.`, 'success');
 }
 
 // JSON file input + drag/drop
@@ -2819,6 +3242,7 @@ function figSelectQuestion(idx) {
         h: qImg.h || FIG_IMG_DEFAULT_H,
         ar: (qImg.w && qImg.h) ? (qImg.w / qImg.h) : (FIG_IMG_DEFAULT_W / FIG_IMG_DEFAULT_H),
         lock: true,
+        pos: 'auto',   // where the figure sits in the question text
     };
     ['a','b','c','d'].forEach(k => {
         const oi = FIG_OPT_INDEX[k];
@@ -2993,12 +3417,16 @@ function figRenderSlots() {
             : (filled && slot.uploaded
                 ? '<span class="fig-slot-status done"><i data-lucide="cloud-check" class="w-3 h-3"></i> On Drive</span>'
                 : '');
+        const aiBadge = (filled && slot.aiGenerated)
+            ? '<span class="fig-slot-ai" title="This figure was generated by the AI figure model"><i data-lucide="sparkles" class="w-3 h-3"></i> AI</span>'
+            : '';
         el.innerHTML = `
             <div class="fig-slot-label">${FIG_SLOT_LABELS[key]}</div>
             ${filled
                 ? `<img src="${escapeAttr(src)}" class="fig-slot-preview" alt="" onerror="this.style.display='none'">`
                 : `<div class="fig-slot-placeholder"><i data-lucide="image" class="w-7 h-7"></i></div>`}
             ${statusBadge}
+            ${aiBadge}
             <button type="button" class="fig-slot-btn fig-slot-btn-crop" data-key="${key}">
                 <i data-lucide="${filled ? 'replace' : 'crop'}" class="w-3 h-3"></i> ${filled ? 'Re-crop' : 'Crop & Set'}
             </button>
@@ -3169,38 +3597,81 @@ function figCropIntoSlot(key) {
     const slot = figState.slots[key];
     if (!slot) return;
 
-    // Release any previous local preview URL for this slot.
-    if (slot.localUrl) { try { URL.revokeObjectURL(slot.localUrl); } catch (e) {} }
+    const aiOn = !!(document.getElementById('fig-ai-gen') || {}).checked;
 
-    canvas.toBlob(blob => {
-        if (!blob) { showToast('Crop failed', 'Could not capture the crop.', 'error'); return; }
-
-        // Store the crop locally. `url` is cleared so apply knows it
-        // still needs uploading.
+    const store = (blob, natW, natH, aiGenerated) => {
+        if (slot.localUrl) { try { URL.revokeObjectURL(slot.localUrl); } catch (e) {} }
         slot.blob = blob;
         slot.localUrl = URL.createObjectURL(blob);
-        slot.url = '';                 // no hosted URL yet
+        slot.url = '';
         slot.uploaded = false;
-
-        // The crop canvas is the EXACT selected area, so its width/height
-        // are the true pixel dimensions of what the user selected.
-        const natW = canvas.width || FIG_IMG_DEFAULT_W;
-        const natH = canvas.height || FIG_IMG_DEFAULT_H;
+        slot.aiGenerated = !!aiGenerated;
         slot.ar = natW > 0 && natH > 0 ? (natW / natH) : (FIG_IMG_DEFAULT_W / FIG_IMG_DEFAULT_H);
-
-        // Default display size: use the crop's exact pixel dimensions so
-        // "crop exact same dimension of selected area" holds out of the box.
-        // The user can still resize afterwards via the slot W/H controls.
         slot.w = natW;
         slot.h = natH;
-
         figRenderSlots();
         figRenderPreview();
-        showToast('Cropped',
-            `${FIG_SLOT_LABELS[key]} cropped at ${natW}\u00d7${natH}px (exact selection). ` +
-            `Resize if needed, then "Apply" to upload.`,
+        showToast(aiGenerated ? 'Figure generated' : 'Cropped',
+            `${FIG_SLOT_LABELS[key]} ${aiGenerated ? 'reproduced by AI' : 'cropped'} at ${natW}\u00d7${natH}px. ` +
+            'Resize if needed, then "Apply" to upload.',
             'success');
-    }, 'image/webp', 0.95);
+    };
+
+    if (!aiOn) {
+        canvas.toBlob(blob => {
+            if (!blob) { showToast('Crop failed', 'Could not capture the crop.', 'error'); return; }
+            store(blob, canvas.width || FIG_IMG_DEFAULT_W, canvas.height || FIG_IMG_DEFAULT_H, false);
+        }, 'image/webp', 0.95);
+        return;
+    }
+
+    // AI figure generation: reproduce ONLY the figure from this crop, then
+    // set it into the slot (still local — Apply uploads it like any crop).
+    figSlotSetBusy(key, true, 'Generating…');
+    const b64 = canvas.toDataURL('image/webp', 0.95).split(',')[1];
+    figGenerateFigureImage(b64).then(im => {
+        const blob = figB64ToBlob(im.data, im.mime);
+        const dataUrl = 'data:' + im.mime + ';base64,' + im.data;
+        figImgNaturalSize(dataUrl).then(dim => {
+            figSlotSetBusy(key, false);
+            store(blob, dim.w, dim.h, true);
+        });
+    }).catch(err => {
+        figSlotSetBusy(key, false);
+        showToast('AI figure failed', (err.message || String(err)) +
+            ' — turn off "AI figure generator" to crop this figure directly instead.', 'error');
+    });
+}
+
+// Natural pixel size of a data-URL image (for slot W/H defaults).
+function figImgNaturalSize(dataUrl) {
+    return new Promise(resolve => {
+        const fallback = { w: FIG_IMG_DEFAULT_W, h: FIG_IMG_DEFAULT_H };
+        try {
+            const im = new Image();
+            const t = setTimeout(() => resolve(fallback), 1500);
+            im.onload = () => { clearTimeout(t); resolve({ w: im.naturalWidth || fallback.w, h: im.naturalHeight || fallback.h }); };
+            im.onerror = () => { clearTimeout(t); resolve(fallback); };
+            im.src = dataUrl;
+        } catch (e) { resolve(fallback); }
+    });
+}
+
+// Show a busy state on one slot's crop button while AI generates.
+function figSlotSetBusy(key, busy, label) {
+    const grid = document.getElementById('fig-slots-grid');
+    if (!grid) return;
+    const btn = grid.querySelector(`.fig-slot-btn-crop[data-key="${key}"]`);
+    if (!btn) return;
+    if (busy) {
+        btn.dataset.orig = btn.innerHTML;
+        btn.disabled = true;
+        btn.innerHTML = `<i data-lucide="loader-2" class="w-3 h-3 animate-spin"></i> ${label || 'Working…'}`;
+    } else {
+        btn.disabled = false;
+        if (btn.dataset.orig) btn.innerHTML = btn.dataset.orig;
+    }
+    try { lucide.createIcons(); } catch (e) {}
 }
 
 // ==================== PDF RENDERING + CROPPER ====================
@@ -3266,6 +3737,7 @@ function figCropIntoSlot(key) {
 // in/out is instant and the scroll container handles overflow.
 function figRenderPdfPage(num) {
     if (!figState.pdfDoc) return;
+    if (figState.continuous) { figRenderPdfContinuous(num); return; }
     figState.srcType = 'pdf';
     figState.imgBitmap = null;
     figState.rendering = true;
@@ -3306,6 +3778,79 @@ function figRenderPdfPage(num) {
         });
     });
     document.getElementById('fig-cur-page').textContent = num;
+    figUpdateSourceNav();
+}
+
+// Continuous mode: stack page `startNum` and the following pages onto ONE
+// tall canvas so a figure/question that spills onto the next page can be
+// cropped in a single selection. A dashed line marks each page boundary.
+function figRenderPdfContinuous(startNum) {
+    if (!figState.pdfDoc) return;
+    figState.srcType = 'pdf';
+    figState.imgBitmap = null;
+    figState.rendering = true;
+    const canvas = document.getElementById('fig-pdf-canvas');
+    const ctx = canvas.getContext('2d');
+    const scroll = document.getElementById('fig-pdf-scroll');
+    const containerWidth = Math.max(scroll.clientWidth - 4, 200);
+    const RASTER = 2.5;
+    const total = figState.pdfDoc.numPages;
+    const span = Math.max(1, figState.contSpan || 2);
+    const last = Math.min(total, startNum + span - 1);
+    const nums = [];
+    for (let n = startNum; n <= last; n++) nums.push(n);
+
+    Promise.all(nums.map(n => figState.pdfDoc.getPage(n))).then(pages => {
+        let maxUnscaledW = 0;
+        pages.forEach(pg => { maxUnscaledW = Math.max(maxUnscaledW, pg.getViewport({ scale: 1 }).width); });
+        figState.fitScale = containerWidth / maxUnscaledW;
+        const vps = pages.map(pg => pg.getViewport({ scale: figState.fitScale * RASTER }));
+        const gap = Math.round(14 * RASTER);
+        const totalW = Math.max.apply(null, vps.map(v => v.width));
+        const totalH = vps.reduce((s, v) => s + v.height, 0) + gap * (vps.length - 1);
+        canvas.width = totalW;
+        canvas.height = totalH;
+        figState.fitDispW = totalW / RASTER;
+        figState.fitDispH = totalH / RASTER;
+        if (figState.cropper) { figState.cropper.destroy(); figState.cropper = null; }
+        ctx.fillStyle = '#ffffff';
+        ctx.fillRect(0, 0, totalW, totalH);
+
+        let y = 0;
+        const renderNext = (i) => {
+            if (i >= pages.length) {
+                figState.rendering = false;
+                figApplyZoom();
+                if (figState.cropMode) figEnableCropper();
+                if (figState.pendingPage !== null) {
+                    const p = figState.pendingPage;
+                    figState.pendingPage = null;
+                    figRenderPdfPage(p);
+                }
+                return;
+            }
+            const vp = vps[i];
+            ctx.save();
+            ctx.translate(0, y);
+            pages[i].render({ canvasContext: ctx, viewport: vp }).promise.then(() => {
+                ctx.restore();
+                if (i < pages.length - 1) {
+                    const sepY = y + vp.height + gap / 2;
+                    ctx.save();
+                    ctx.strokeStyle = '#cbd5e1';
+                    ctx.lineWidth = 2;
+                    ctx.setLineDash([10, 8]);
+                    ctx.beginPath(); ctx.moveTo(0, sepY); ctx.lineTo(totalW, sepY); ctx.stroke();
+                    ctx.restore();
+                }
+                y += vp.height + gap;
+                renderNext(i + 1);
+            });
+        };
+        renderNext(0);
+    });
+
+    document.getElementById('fig-cur-page').textContent = last > startNum ? (startNum + '\u2013' + last) : String(startNum);
     figUpdateSourceNav();
 }
 
@@ -3451,9 +3996,16 @@ function figQueuePdfPage(num) {
         if (figState.pageNum > 1) { figState.pageNum--; figQueuePdfPage(figState.pageNum); }
     });
     document.getElementById('fig-next-page').addEventListener('click', () => {
+        const step = 1;
         if (figState.pdfDoc && figState.pageNum < figState.pdfDoc.numPages) {
-            figState.pageNum++; figQueuePdfPage(figState.pageNum);
+            figState.pageNum = Math.min(figState.pdfDoc.numPages, figState.pageNum + step);
+            figQueuePdfPage(figState.pageNum);
         }
+    });
+    const figContToggle = document.getElementById('fig-continuous');
+    if (figContToggle) figContToggle.addEventListener('change', () => {
+        figState.continuous = !!figContToggle.checked;
+        if (figState.pdfDoc) figQueuePdfPage(figState.pageNum);
     });
     // Zoom in/out just re-applies CSS sizing — instant, scroll handles overflow.
     document.getElementById('fig-zoom-in').addEventListener('click', () => {
@@ -3591,6 +4143,7 @@ function figSaveGitHubConfig() {
 
 function figSetGitHubStatus(msg, kind) {
     const el = document.getElementById('fig-gh-status');
+    if (typeof figUpdateHostChip === 'function') { try { figUpdateHostChip(); } catch (e) {} }
     if (!el) return;
     el.textContent = msg || '';
     el.className = 'text-xs ' + (
@@ -3719,18 +4272,36 @@ async function figQuickUpload() {
     lucide.createIcons();
 
     try {
-        const blob = await new Promise(res => canvas.toBlob(res, 'image/webp', 0.95));
-        const url = await figUploadImage(blob,
-            `mcq-crop-${Date.now()}.webp`, 'image/webp');
+        let blob = await new Promise(res => canvas.toBlob(res, 'image/webp', 0.95));
+        let fileName = `mcq-crop-${Date.now()}.webp`;
+        let mime = 'image/webp';
+
+        // Optional AI figure generation: reproduce ONLY the figure from the
+        // crop with the image-output model, then upload that instead.
+        const aiOn = !!(document.getElementById('fig-ai-gen') || {}).checked;
+        if (aiOn) {
+            btn.innerHTML = '<i data-lucide="loader-2" class="w-3.5 h-3.5 animate-spin"></i> Generating figure...';
+            lucide.createIcons();
+            const b64 = canvas.toDataURL('image/webp', 0.95).split(',')[1];
+            const im = await figGenerateFigureImage(b64);   // {mime, data}
+            mime = im.mime;
+            const ext = /png/.test(mime) ? 'png' : /jpe?g/.test(mime) ? 'jpg' : /webp/.test(mime) ? 'webp' : 'png';
+            fileName = `mcq-fig-${Date.now()}.${ext}`;
+            blob = figB64ToBlob(im.data, mime);
+            btn.innerHTML = '<i data-lucide="loader-2" class="w-3.5 h-3.5 animate-spin"></i> Uploading...';
+            lucide.createIcons();
+        }
+
+        const url = await figUploadImage(blob, fileName, mime);
         result.classList.remove('hidden');
         result.innerHTML = `
             <div class="flex items-center gap-2 flex-wrap">
-                <span class="font-semibold text-green-700">Uploaded!</span>
+                <span class="font-semibold text-green-700">${aiOn ? 'Figure generated &amp; uploaded!' : 'Uploaded!'}</span>
                 <input type="text" value="${escapeAttr(url)}" readonly
                     class="flex-1 min-w-[200px] gd-input text-[11px]" onclick="this.select()">
                 <a href="${escapeAttr(url)}" target="_blank" class="gd-link">Open</a>
             </div>`;
-        showToast('Uploaded', 'Image committed to GitHub and served via jsDelivr.', 'success');
+        showToast('Uploaded', aiOn ? 'AI figure committed to GitHub and served via jsDelivr.' : 'Image committed to GitHub and served via jsDelivr.', 'success');
     } catch (err) {
         console.error(err);
         result.classList.remove('hidden');
@@ -3790,7 +4361,8 @@ function figRenderPreview() {
     const qSlot = figState.slots.q;
     const qSrc = figGetSlotImageSrc(qSlot);
     qText = figApplyImageToText(qText, qSrc
-        ? figBuildImgTag(qSrc, qSlot.w, qSlot.h) : '', !!qSrc);
+        ? figBuildImgTag(qSrc, qSlot.w, qSlot.h) : '', !!qSrc,
+        qSlot ? qSlot.pos : undefined);
 
     const correct = Array.isArray(meta._aimcq_correct_answers)
         ? meta._aimcq_correct_answers.map(Number) : [0];
@@ -3858,23 +4430,87 @@ function figRenderPreview() {
 
 // Replace a placeholder OR an existing aimcq image in a text body with
 // the supplied img tag. If `hasImg` is false, strips placeholders only.
-function figApplyImageToText(text, imgTag, hasImg) {
+// `pos` chooses WHERE the figure goes:
+//   'auto' (default) — replace [image here] placeholder, else replace the
+//                      existing aimcq figure, else append at the end.
+//   'start' | 'end'  — force the figure to the start / end of the text.
+//   <number N>       — insert after the question's Nth line/segment
+//                      (0-based; segments as computed by figSplitQSegments).
+function figApplyImageToText(text, imgTag, hasImg, pos) {
     if (!text) return hasImg ? imgTag : text;
     let out = text;
-    const imgRe = new RegExp('<img[^>]*class=["\\\']?[^"\\\']*' + FIG_IMG_CLASS + '[^>]*>', 'i');
     if (!hasImg || !imgTag) {
         // Just strip placeholders
         return out.replace(FIG_PLACEHOLDER_RE_G, '').trim();
     }
-    if (FIG_PLACEHOLDER_RE.test(out)) {
-        out = out.replace(FIG_PLACEHOLDER_RE, imgTag);
-    } else if (imgRe.test(out)) {
-        out = out.replace(imgRe, imgTag);
-    } else {
-        out = out + (out.trim().endsWith('>') ? '' : '<br>') + imgTag;
+    if (pos === undefined || pos === null || pos === 'auto') {
+        const imgRe = new RegExp('<img[^>]*class=["\\\']?[^"\\\']*' + FIG_IMG_CLASS + '[^>]*>', 'i');
+        if (FIG_PLACEHOLDER_RE.test(out)) {
+            out = out.replace(FIG_PLACEHOLDER_RE, imgTag);
+        } else if (imgRe.test(out)) {
+            out = out.replace(imgRe, imgTag);
+        } else {
+            out = out + (out.trim().endsWith('>') ? '' : '<br>') + imgTag;
+        }
+        // Clean any leftover placeholders
+        return out.replace(FIG_PLACEHOLDER_RE_G, '').trim();
     }
-    // Clean any leftover placeholders
-    return out.replace(FIG_PLACEHOLDER_RE_G, '').trim();
+    // Explicit position: work on the CLEANED text (placeholders and any
+    // previously-inserted aimcq figure removed) so re-applying at a new
+    // position moves the figure instead of duplicating it.
+    const clean = figCleanQText(out);
+    if (pos === 'start') {
+        return (imgTag + clean).trim();
+    }
+    if (pos === 'end') {
+        return (clean + (clean.trim().endsWith('>') ? '' : '<br>') + imgTag).trim();
+    }
+    // Numeric: insert after segment N.
+    const segs = figSplitQSegments(clean);
+    if (!segs.length) return imgTag;
+    const n = Math.max(0, Math.min(parseInt(pos, 10) || 0, segs.length - 1));
+    return (segs.slice(0, n + 1).join('') + imgTag + segs.slice(n + 1).join('')).trim();
+}
+
+// Remove [image here: ...] placeholders and any existing aimcq figure
+// <img> from a question text — the neutral base for positional insertion.
+function figCleanQText(text) {
+    const imgReG = new RegExp('<img[^>]*class=["\\\']?[^"\\\']*' + FIG_IMG_CLASS + '[^>]*>', 'ig');
+    return String(text || '')
+        .replace(imgReG, '')
+        .replace(FIG_PLACEHOLDER_RE_G, '')
+        .trim();
+}
+
+// Split question HTML into insertable line/segments at block boundaries
+// (</p>, </div>, </li>, </tr>, <br>), keeping each delimiter attached to
+// the segment it ends. Markup-only fragments (e.g. bare <br><br>) are
+// glued to the neighbouring segment so every listed segment has visible
+// text — these are the "lines" offered in the position picker.
+function figSplitQSegments(html) {
+    const parts = String(html || '').split(/(<\/p>|<\/div>|<\/li>|<\/tr>|<br\s*\/?>)/i);
+    const segs = [];
+    let carry = '';
+    for (let i = 0; i < parts.length; i += 2) {
+        const chunk = parts[i] || '';
+        const delim = parts[i + 1] || '';
+        const raw = carry + chunk + delim;
+        carry = '';
+        if (!raw) continue;
+        if (stripHtmlTags(chunk).trim() === '') {
+            // No visible text in this fragment — attach it to the previous
+            // segment (trailing <br>s) or carry it into the next (leading markup).
+            if (segs.length) segs[segs.length - 1] += raw;
+            else carry = raw;
+        } else {
+            segs.push(raw);
+        }
+    }
+    if (carry) {
+        if (segs.length) segs[segs.length - 1] += carry;
+        else if (carry.trim()) segs.push(carry);
+    }
+    return segs;
 }
 
 // ==================== APPLY FIGURES TO QUESTION ====================
@@ -3950,13 +4586,13 @@ async function figApplyToQuestion() {
     const qSlot = figState.slots.q;
     if (qSlot && qSlot.url) {
         const imgTag = figBuildImgTag(qSlot.url, qSlot.w, qSlot.h);
-        post.post_content = figApplyImageToText(post.post_content || '', imgTag, true);
+        post.post_content = figApplyImageToText(post.post_content || '', imgTag, true, qSlot.pos);
         post.post_title = stripHtmlTags(post.post_content).slice(0, 120) || post.post_title;
 
-        // Hindi content mirror
+        // Hindi content mirror (same line position, clamped to its own lines)
         if (meta._aimcq_question_content_hi) {
             meta._aimcq_question_content_hi =
-                figApplyImageToText(meta._aimcq_question_content_hi, imgTag, true);
+                figApplyImageToText(meta._aimcq_question_content_hi, imgTag, true, qSlot.pos);
         }
         // Record dimensions in the meta the theme reads.
         meta._aimcq_image_width = String(qSlot.w || FIG_IMG_DEFAULT_W);
@@ -4041,6 +4677,58 @@ const GH_JSON_KEY = 'gh_json_creds';
 let ghJsonCreds = { repo: '', branch: 'main', token: '' };
 // Which tab the picker is serving: 'figures' or 'editor'.
 let ghPickerTarget = 'figures';
+
+// ---- File-type support: only the Editor's picker browses/uploads/deletes
+// PDF, image & HTML files in addition to JSON. Figures/Quiz Builder stay
+// JSON-only (they parse the file as question data, so nothing else fits). ----
+const GH_EDITOR_EXTRA_EXTS = ['pdf', 'png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'html', 'htm'];
+const GH_IMAGE_EXTS = ['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg'];
+
+function ghSupportsExtraTypes() {
+    return ghPickerTarget === 'editor';
+}
+// Classify a filename into a display "kind": json | pdf | image | html | other.
+function ghFileKind(name) {
+    const ext = (String(name).split('.').pop() || '').toLowerCase();
+    if (ext === 'json') return 'json';
+    if (ext === 'pdf') return 'pdf';
+    if (GH_IMAGE_EXTS.indexOf(ext) !== -1) return 'image';
+    if (ext === 'html' || ext === 'htm') return 'html';
+    return 'other';
+}
+function ghFileIconFor(kind) {
+    return kind === 'json' ? 'file-json' :
+           kind === 'pdf'  ? 'file-text' :
+           kind === 'image' ? 'image' :
+           kind === 'html' ? 'file-code-2' : 'file';
+}
+function ghFileColorFor(kind) {
+    return kind === 'json' ? 'text-blue-500' :
+           kind === 'pdf'  ? 'text-red-500' :
+           kind === 'image' ? 'text-emerald-500' :
+           kind === 'html' ? 'text-orange-500' : 'text-gray-400';
+}
+function ghMimeFor(kind, name) {
+    if (kind === 'pdf') return 'application/pdf';
+    if (kind === 'html') return 'text/html';
+    if (kind === 'json') return 'application/json';
+    if (kind === 'image') {
+        const ext = (String(name).split('.').pop() || '').toLowerCase();
+        return ext === 'svg' ? 'image/svg+xml' :
+               ext === 'png' ? 'image/png' :
+               (ext === 'jpg' || ext === 'jpeg') ? 'image/jpeg' :
+               ext === 'gif' ? 'image/gif' :
+               ext === 'webp' ? 'image/webp' : 'application/octet-stream';
+    }
+    return 'application/octet-stream';
+}
+// Is this filename browsable/loadable in the current picker context?
+// JSON everywhere; PDF/image/HTML only when the Editor opened the picker.
+function ghFileIsBrowsable(name) {
+    const ext = (String(name).split('.').pop() || '').toLowerCase();
+    if (ext === 'json') return true;
+    return ghSupportsExtraTypes() && GH_EDITOR_EXTRA_EXTS.indexOf(ext) !== -1;
+}
 
 // Load saved JSON credentials from localStorage on boot.
 (function loadGhJsonCreds() {
@@ -4161,7 +4849,7 @@ function ghRenderRecents() {
         const chip = document.createElement('div');
         chip.className = 'gh-recent-chip';
         chip.title = `${r.repo}@${r.branch} / ${r.path}`;
-        chip.innerHTML = '<i data-lucide="file-json" class="w-3 h-3 flex-shrink-0"></i>' +
+        chip.innerHTML = `<i data-lucide="${ghFileIconFor(ghFileKind(r.name))}" class="w-3 h-3 flex-shrink-0"></i>` +
             `<span class="gh-recent-name">${escapeHtml(r.name)}</span>`;
         chip.addEventListener('click', () => {
             // Switch creds to that recent's repo/branch and load it.
@@ -4223,13 +4911,35 @@ function figGitHubOpenPicker(target) {
     if (_delLoc) _delLoc.textContent = 'Repository contents';
     ghDeleteCancelConfirm();
 
+    const extra = ghSupportsExtraTypes();
     document.getElementById('fig-gh-picker-list').innerHTML =
         '<div class="p-8 text-center text-gray-400 text-sm">' +
-        'Enter a folder and click <b>Browse</b> to list its JSON files.</div>';
+        'Enter a folder and click <b>Browse</b> to list its ' +
+        (extra ? 'JSON, PDF, image &amp; HTML files' : 'JSON files') + '.</div>';
     document.getElementById('fig-gh-picker-loc').textContent = 'Repository contents';
     ghSetCredsStatus(
         ghJsonCreds.repo && ghJsonCreds.token
             ? `Saved: ${ghJsonCreds.repo}@${ghJsonCreds.branch}.` : '', '');
+
+    // File-path box + footer hint reflect what this picker can browse.
+    const pickFileIn = document.getElementById('fig-gh-pick-file');
+    if (pickFileIn) pickFileIn.placeholder = extra
+        ? 'Exact file path, e.g. quizzes/physics.json or figures/diagram.png'
+        : 'Exact file path, e.g. quizzes/physics.json';
+    const footerHint = document.getElementById('fig-gh-footer-hint');
+    if (footerHint) footerHint.innerHTML = extra
+        ? 'Files load via the GitHub API. JSON loads straight into the Editor; the <b>CDN</b> button (or clicking a PDF/image/HTML row) copies its jsDelivr link.'
+        : 'Files load via the GitHub API. The <b>CDN</b> button copies a file\'s jsDelivr link.';
+
+    // Upload tab: widen accepted types when the Editor opened the picker.
+    const upFile = document.getElementById('fig-gh-up-file');
+    if (upFile) upFile.accept = extra ? '.json,.pdf,.png,.jpg,.jpeg,.gif,.webp,.svg,.html,.htm' : '.json';
+    const upLabel = document.getElementById('fig-gh-up-label');
+    if (upLabel) upLabel.textContent = extra ? 'File to upload (JSON, PDF, image, or HTML)' : 'JSON file to upload';
+    const upDesc = document.getElementById('fig-gh-up-desc');
+    if (upDesc) upDesc.textContent = extra
+        ? 'Commit a new file into the repository — JSON, PDF, image, or HTML — into an existing folder or a brand-new one (the folder is created automatically). Publish a quiz file or an attachment, then load or copy its link from the Browse tab.'
+        : 'Commit a new JSON file into the repository — into an existing folder or a brand-new one (the folder is created automatically). Use this to publish a quiz file, then load it from the Browse tab.';
 
     // Reset upload tab fields.
     ghResetUploadForm();
@@ -4319,15 +5029,19 @@ async function figGitHubBrowse() {
                 'That path is a file, not a folder. Use the "Load a file directly" box below.</div>';
             return;
         }
-        // Folders first, then .json files. Other files are ignored.
+        // Folders first, then browsable files (JSON everywhere; also PDF,
+        // image & HTML when the Editor opened this picker). Other files
+        // are ignored.
         const folders = items.filter(x => x.type === 'dir')
             .sort((a, b) => a.name.localeCompare(b.name));
-        const jsons = items.filter(x => x.type === 'file' && /\.json$/i.test(x.name))
+        const jsons = items.filter(x => x.type === 'file' && ghFileIsBrowsable(x.name))
             .sort((a, b) => a.name.localeCompare(b.name));
 
         if (!folders.length && !jsons.length) {
             list.innerHTML = '<div class="p-6 text-center text-gray-400 text-sm">' +
-                'No folders or .json files here.</div>';
+                (ghSupportsExtraTypes()
+                    ? 'No folders or supported files (JSON, PDF, image, HTML) here.'
+                    : 'No folders or .json files here.') + '</div>';
             return;
         }
 
@@ -4350,7 +5064,22 @@ async function figGitHubBrowse() {
             row.className = 'gd-file-row';
             row.innerHTML = '<i data-lucide="folder" class="w-4 h-4 text-amber-500"></i>' +
                 `<span class="gd-file-row-name">${escapeHtml(f.name)}</span>` +
+                `<span class="gd-file-row-dl" title="Download this folder as a ZIP">` +
+                '<i data-lucide="download" class="w-3 h-3"></i></span>' +
+                `<span class="gd-file-row-del" title="Permanently delete this folder and ALL files inside it from GitHub">` +
+                '<i data-lucide="trash-2" class="w-3 h-3"></i></span>' +
                 '<i data-lucide="chevron-right" class="w-3.5 h-3.5 text-gray-300"></i>';
+            // Download folder as ZIP — does NOT navigate into it.
+            row.querySelector('.gd-file-row-dl').addEventListener('click', e => {
+                e.stopPropagation();
+                ghBrowseDownloadFolder(repo, branch, f.path, f.name, e.currentTarget);
+            });
+            // Delete folder (two-step inline confirm) — does NOT navigate.
+            row.querySelector('.gd-file-row-del').addEventListener('click', e => {
+                e.stopPropagation();
+                ghBrowseDeleteFolder(repo, branch, f, e.currentTarget);
+            });
+            // Clicking the rest of the row navigates into the folder.
             row.addEventListener('click', () => {
                 document.getElementById('fig-gh-pick-path').value = f.path;
                 figGitHubBrowse();
@@ -4361,22 +5090,50 @@ async function figGitHubBrowse() {
             const row = document.createElement('div');
             row.className = 'gd-file-row';
             const cdnUrl = ghJsonCdnUrl(repo, branch, f.path);
-            row.innerHTML = '<i data-lucide="file-json" class="w-4 h-4 text-blue-500 flex-shrink-0"></i>' +
+            const kind = ghFileKind(f.name);
+            const isJson = kind === 'json';
+            row.innerHTML = `<i data-lucide="${ghFileIconFor(kind)}" class="w-4 h-4 ${ghFileColorFor(kind)} flex-shrink-0"></i>` +
                 `<span class="gd-file-row-name">${escapeHtml(f.name)}</span>` +
                 `<span class="gd-file-row-cdn" title="Copy jsDelivr CDN link">` +
                 '<i data-lucide="link" class="w-3 h-3"></i> CDN</span>' +
-                '<span class="gd-file-row-load">Load</span>';
+                `<span class="gd-file-row-dl" title="Download this file">` +
+                '<i data-lucide="download" class="w-3 h-3"></i></span>' +
+                `<span class="gd-file-row-del" title="Permanently delete this file from GitHub">` +
+                '<i data-lucide="trash-2" class="w-3 h-3"></i></span>' +
+                (isJson
+                    ? '<span class="gd-file-row-load">Load</span>'
+                    : '<span class="gd-file-row-load" title="Copy the jsDelivr CDN link for this file">Use</span>');
             // Copy-CDN: copies the link, does NOT load the file.
             row.querySelector('.gd-file-row-cdn').addEventListener('click', e => {
                 e.stopPropagation();
                 ghCopyToClipboard(cdnUrl, 'jsDelivr CDN link');
             });
-            // Clicking the rest of the row loads the file.
-            row.querySelector('.gd-file-row-load').addEventListener('click', e => {
+            // Download: saves the file as-is (no canonicalization), does NOT load it.
+            row.querySelector('.gd-file-row-dl').addEventListener('click', e => {
                 e.stopPropagation();
-                figGitHubLoadFile(repo, branch, f.path, f.name);
+                ghBrowseDownloadFile(repo, branch, f.path, f.name, e.currentTarget);
             });
-            row.addEventListener('click', () => figGitHubLoadFile(repo, branch, f.path, f.name));
+            // Delete: two-step inline confirm, then permanently removes from GitHub.
+            row.querySelector('.gd-file-row-del').addEventListener('click', e => {
+                e.stopPropagation();
+                ghBrowseDeleteFile(repo, branch, f, e.currentTarget);
+            });
+            if (isJson) {
+                // Clicking the rest of the row (or "Load") loads the JSON into the tool.
+                row.querySelector('.gd-file-row-load').addEventListener('click', e => {
+                    e.stopPropagation();
+                    figGitHubLoadFile(repo, branch, f.path, f.name);
+                });
+                row.addEventListener('click', () => figGitHubLoadFile(repo, branch, f.path, f.name));
+            } else {
+                // PDF / image / HTML — there's nothing to "load" as question data,
+                // so the row's main action copies its CDN link instead.
+                row.querySelector('.gd-file-row-load').addEventListener('click', e => {
+                    e.stopPropagation();
+                    ghCopyToClipboard(cdnUrl, 'jsDelivr CDN link');
+                });
+                row.addEventListener('click', () => ghCopyToClipboard(cdnUrl, 'jsDelivr CDN link'));
+            }
             list.appendChild(row);
         });
         lucide.createIcons();
@@ -4397,15 +5154,28 @@ function figGitHubLoadByPath() {
         showToast('Bad repo', 'Repository must be in "owner/repo" format.', 'error');
         return;
     }
-    if (!path || !/\.json$/i.test(path)) {
-        showToast('Bad path', 'Enter a path ending in .json', 'error');
+    if (!path || !ghFileIsBrowsable(path)) {
+        showToast('Bad path',
+            ghSupportsExtraTypes()
+                ? 'Enter a path ending in .json, .pdf, an image, or .html'
+                : 'Enter a path ending in .json', 'error');
         return;
     }
     figGitHubLoadFile(repo, branch, path, path.split('/').pop());
 }
 
-// Fetch a JSON file from GitHub and load it into the Figure Updater.
+// Fetch a file from GitHub. JSON is parsed and delivered into the tab that
+// opened the picker (Editor / Quiz Builder / Figure Updater). PDF, image &
+// HTML files (Editor-only) aren't parseable question data, so their
+// jsDelivr CDN link is copied to the clipboard instead.
 async function figGitHubLoadFile(repo, branch, path, name) {
+    if (ghFileKind(name) !== 'json') {
+        const ghFile = { repo, branch, path, name };
+        ghAddRecent(ghFile);
+        ghCopyToClipboard(ghJsonCdnUrl(repo, branch, path), 'jsDelivr CDN link for "' + name + '"');
+        figGitHubClosePicker();
+        return;
+    }
     showToast('Loading…', `Fetching ${name} from GitHub.`, 'info');
     try {
         const url = `https://api.github.com/repos/${repo}/contents/${encodeURI(path)}` +
@@ -4452,24 +5222,259 @@ async function figGitHubLoadFile(repo, branch, path, name) {
     }
 }
 
-// Shared: commit a JS object as a JSON file to GitHub (creates or updates).
-// `file` = { repo, branch, path, name, sha }. Returns the new sha.
-async function ghCommitJsonFile(file, dataObj, commitMessage) {
+/* --------------------------------------------------------------------
+   BROWSE-TAB ROW ACTIONS: Download + permanent Delete  (v1.3)
+   -------------------------------------------------------------------- */
+
+// Fetch a repo file's raw text via the contents API (works for private
+// repos through figGitHubHeaders; falls back to download_url for >1 MB).
+async function ghFetchFileText(repo, branch, path) {
+    const url = `https://api.github.com/repos/${repo}/contents/${encodeURI(path)}` +
+        `?ref=${encodeURIComponent(branch)}`;
+    const resp = await fetch(url, { headers: figGitHubHeaders() });
+    if (!resp.ok) {
+        let msg = 'HTTP ' + resp.status;
+        try { const j = await resp.json(); msg = j.message || msg; } catch (e) {}
+        throw new Error(msg);
+    }
+    const meta = await resp.json();
+    if (Array.isArray(meta) || meta.type !== 'file') throw new Error('That path is not a file.');
+    if (meta.encoding === 'base64' && meta.content) {
+        const bin = atob(meta.content.replace(/\n/g, ''));
+        const bytes = Uint8Array.from(bin, c => c.charCodeAt(0));
+        return new TextDecoder('utf-8').decode(bytes);
+    }
+    if (meta.download_url) {
+        const dl = await fetch(meta.download_url);
+        return await dl.text();
+    }
+    throw new Error('File content is empty or unsupported.');
+}
+
+// Download a browsed file AS-IS (byte-faithful text, no canonicalization,
+// nothing is loaded into any tab).
+async function ghBrowseDownloadFile(repo, branch, path, name, btnEl) {
+    const origHTML = btnEl ? btnEl.innerHTML : '';
+    if (btnEl) { btnEl.innerHTML = '<i data-lucide="loader-2" class="w-3 h-3 animate-spin"></i>'; lucide.createIcons(); }
+    try {
+        const kind = ghFileKind(name);
+        let blob;
+        if (kind === 'pdf' || kind === 'image') {
+            // Binary-safe fetch — text decoding would corrupt these bytes.
+            const bytes = await ghFetchFileBytes(repo, branch, path);
+            blob = new Blob([bytes], { type: ghMimeFor(kind, name) });
+        } else {
+            const text = await ghFetchFileText(repo, branch, path);
+            blob = new Blob([text], { type: ghMimeFor(kind, name) });
+        }
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url; a.download = name;
+        document.body.appendChild(a); a.click();
+        document.body.removeChild(a); URL.revokeObjectURL(url);
+        showToast('Downloaded', `"${name}" saved to your device.`, 'success');
+    } catch (err) {
+        showToast('Download failed', err.message || String(err), 'error');
+    } finally {
+        if (btnEl) { btnEl.innerHTML = origHTML; lucide.createIcons(); }
+    }
+}
+
+// Two-step inline confirm + permanent delete for a browsed file.
+// First click arms the button (turns into "Sure?"; auto-disarms after 4 s);
+// second click within that window deletes the file from the repository,
+// unlinks it if it is the currently linked Editor/Figures file, and
+// refreshes the listing.
+function ghBrowseDeleteFile(repo, branch, f, btnEl) {
+    if (!btnEl) return;
+    if (!ghJsonCreds.token) {
+        showToast('Token required', 'Deleting needs a GitHub token (repo scope). Open the Credentials tab.', 'error');
+        if (typeof ghSwitchTab === 'function') ghSwitchTab('creds');
+        return;
+    }
+    // Step 1: arm.
+    if (!btnEl.classList.contains('confirm')) {
+        btnEl.classList.add('confirm');
+        btnEl.innerHTML = '<i data-lucide="alert-triangle" class="w-3 h-3"></i> Sure?';
+        btnEl.title = 'Click again to PERMANENTLY delete "' + f.name + '" from ' + repo + '@' + branch;
+        lucide.createIcons();
+        btnEl.__ghDelTimer = setTimeout(function () {
+            btnEl.classList.remove('confirm');
+            btnEl.innerHTML = '<i data-lucide="trash-2" class="w-3 h-3"></i>';
+            btnEl.title = 'Permanently delete this file from GitHub';
+            lucide.createIcons();
+        }, 4000);
+        return;
+    }
+    // Step 2: execute.
+    clearTimeout(btnEl.__ghDelTimer);
+    btnEl.classList.remove('confirm');
+    btnEl.innerHTML = '<i data-lucide="loader-2" class="w-3 h-3 animate-spin"></i>';
+    lucide.createIcons();
+    (async function () {
+        try {
+            await ghDeleteSingleFile(repo, branch, f.path, f.sha, f.name);
+            showToast('Deleted', '"' + f.name + '" permanently removed from ' + repo + '@' + branch + '.', 'success');
+            // If the deleted file is the currently linked GitHub file of the
+            // Editor or Figure Updater, unlink it so later "Update on GitHub"
+            // commits don't fail against a missing file.
+            var same = function (l) {
+                return l && l.repo === repo && l.branch === branch && l.path === f.path;
+            };
+            if (typeof editorGitHubFile !== 'undefined' && same(editorGitHubFile)
+                && typeof editorUnlinkGitHub === 'function') editorUnlinkGitHub();
+            if (typeof figState !== 'undefined' && same(figState.githubFile)
+                && typeof figUnlinkGitHub === 'function') figUnlinkGitHub();
+            await figGitHubBrowse();   // refresh the listing
+        } catch (err) {
+            showToast('Delete failed', err.message || String(err), 'error');
+            btnEl.innerHTML = '<i data-lucide="trash-2" class="w-3 h-3"></i>';
+            lucide.createIcons();
+        }
+    })();
+}
+
+// Fetch a repo file's RAW BYTES (binary-safe — needed so non-text assets
+// like images inside a folder survive a folder→ZIP download intact).
+async function ghFetchFileBytes(repo, branch, path) {
+    const url = `https://api.github.com/repos/${repo}/contents/${encodeURI(path)}` +
+        `?ref=${encodeURIComponent(branch)}`;
+    const resp = await fetch(url, { headers: figGitHubHeaders() });
+    if (!resp.ok) {
+        let msg = 'HTTP ' + resp.status;
+        try { const j = await resp.json(); msg = j.message || msg; } catch (e) {}
+        throw new Error(msg);
+    }
+    const meta = await resp.json();
+    if (Array.isArray(meta) || meta.type !== 'file') throw new Error('That path is not a file.');
+    if (meta.encoding === 'base64' && meta.content) {
+        const bin = atob(meta.content.replace(/\n/g, ''));
+        return Uint8Array.from(bin, c => c.charCodeAt(0));
+    }
+    if (meta.download_url) {
+        const dl = await fetch(meta.download_url);
+        return new Uint8Array(await dl.arrayBuffer());
+    }
+    throw new Error('File content is empty or unsupported.');
+}
+
+// Download an entire repo folder (recursively) as a ZIP. Files keep their
+// paths relative to the folder. Nothing is loaded into any tab.
+async function ghBrowseDownloadFolder(repo, branch, folderPath, folderName, btnEl) {
+    const origHTML = btnEl ? btnEl.innerHTML : '';
+    const setBtn = html => { if (btnEl) { btnEl.innerHTML = html; lucide.createIcons(); } };
+    setBtn('<i data-lucide="loader-2" class="w-3 h-3 animate-spin"></i>');
+    try {
+        const files = await ghCollectFolderFiles(repo, branch, folderPath);
+        if (!files.length) { showToast('Empty folder', 'No files found inside "' + folderName + '".', 'error'); return; }
+        const zip = new JSZip();
+        let done = 0, failed = 0;
+        for (const f of files) {
+            try {
+                const bytes = await ghFetchFileBytes(repo, branch, f.path);
+                // Path inside the zip: relative to the downloaded folder.
+                const rel = f.path.startsWith(folderPath + '/')
+                    ? f.path.slice(folderPath.length + 1) : f.name;
+                zip.file(folderName + '/' + rel, bytes);
+            } catch (e) { failed++; console.warn('Could not fetch', f.path, e.message); }
+            done++;
+            setBtn('<span style="font-size:10px;font-weight:700;">' + done + '/' + files.length + '</span>');
+        }
+        const blob = await zip.generateAsync({ type: 'blob' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url; a.download = folderName + '.zip';
+        document.body.appendChild(a); a.click();
+        document.body.removeChild(a); URL.revokeObjectURL(url);
+        showToast(failed ? 'Downloaded (partial)' : 'Downloaded',
+            failed ? (done - failed) + ' file(s) zipped, ' + failed + ' failed.'
+                   : '"' + folderName + '.zip" (' + files.length + ' file(s)) saved to your device.',
+            failed ? 'error' : 'success');
+    } catch (err) {
+        showToast('Download failed', err.message || String(err), 'error');
+    } finally {
+        setBtn(origHTML);
+    }
+}
+
+// Two-step inline confirm + permanent delete of a folder AND everything in
+// it. Same arm/auto-disarm pattern as the single-file delete; the second
+// click deletes every file (with progress on the button), unlinks any
+// linked Editor/Figures file that lived inside the folder, and refreshes.
+function ghBrowseDeleteFolder(repo, branch, f, btnEl) {
+    if (!btnEl) return;
+    if (!ghJsonCreds.token) {
+        showToast('Token required', 'Deleting needs a GitHub token (repo scope). Open the Credentials tab.', 'error');
+        if (typeof ghSwitchTab === 'function') ghSwitchTab('creds');
+        return;
+    }
+    if (!btnEl.classList.contains('confirm')) {
+        btnEl.classList.add('confirm');
+        btnEl.innerHTML = '<i data-lucide="alert-triangle" class="w-3 h-3"></i> Sure?';
+        btnEl.title = 'Click again to PERMANENTLY delete folder "' + f.name + '" and ALL files inside it from ' + repo + '@' + branch;
+        lucide.createIcons();
+        btnEl.__ghDelTimer = setTimeout(function () {
+            btnEl.classList.remove('confirm');
+            btnEl.innerHTML = '<i data-lucide="trash-2" class="w-3 h-3"></i>';
+            btnEl.title = 'Permanently delete this folder and ALL files inside it from GitHub';
+            lucide.createIcons();
+        }, 4000);
+        return;
+    }
+    clearTimeout(btnEl.__ghDelTimer);
+    btnEl.classList.remove('confirm');
+    const setBtn = html => { btnEl.innerHTML = html; lucide.createIcons(); };
+    setBtn('<i data-lucide="loader-2" class="w-3 h-3 animate-spin"></i>');
+    (async function () {
+        try {
+            const files = await ghCollectFolderFiles(repo, branch, f.path);
+            if (!files.length) {
+                showToast('Empty folder', 'Folder appears empty — nothing to delete.', 'error');
+                await figGitHubBrowse();
+                return;
+            }
+            let deleted = 0, failed = 0;
+            for (const file of files) {
+                try {
+                    await ghDeleteSingleFile(repo, branch, file.path, file.sha, file.name);
+                    deleted++;
+                } catch (e) { console.warn('Could not delete', file.path, e.message); failed++; }
+                setBtn('<span style="font-size:10px;font-weight:700;">' + (deleted + failed) + '/' + files.length + '</span>');
+            }
+            showToast(failed ? 'Partial delete' : 'Folder deleted',
+                failed ? deleted + ' file(s) deleted, ' + failed + ' failed.'
+                       : 'Folder "' + f.name + '" and ' + deleted + ' file(s) permanently removed from ' + repo + '@' + branch + '.',
+                failed ? 'error' : 'success');
+            // Unlink Editor/Figures files that lived inside the deleted folder.
+            var inside = function (l) {
+                return l && l.repo === repo && l.branch === branch
+                    && (l.path === f.path || (l.path || '').indexOf(f.path + '/') === 0);
+            };
+            if (typeof editorGitHubFile !== 'undefined' && inside(editorGitHubFile)
+                && typeof editorUnlinkGitHub === 'function') editorUnlinkGitHub();
+            if (typeof figState !== 'undefined' && inside(figState.githubFile)
+                && typeof figUnlinkGitHub === 'function') figUnlinkGitHub();
+            await figGitHubBrowse();
+        } catch (err) {
+            showToast('Delete failed', err.message || String(err), 'error');
+            setBtn('<i data-lucide="trash-2" class="w-3 h-3"></i>');
+        }
+    })();
+}
+
+// Shared: commit raw base64 content (any file type) to GitHub via the
+// Contents API (creates or updates). `file` = { repo, branch, path, name,
+// sha }. Returns the new sha. Used directly for PDF/image/HTML uploads,
+// and internally by ghCommitJsonFile below.
+async function ghCommitRawFile(file, base64Content, commitMessage) {
     if (!ghJsonCreds.token) {
         throw new Error('A GitHub token is required to commit. Open the GitHub picker ' +
             'and enter a Personal Access Token (repo scope).');
     }
-    const json = JSON.stringify(aimcqCanonicalizeExport(dataObj), null, 2);
-    // base64-encode the UTF-8 content (handles Hindi and all Unicode).
-    const bytes = new TextEncoder().encode(json);
-    let bin = '';
-    bytes.forEach(b => { bin += String.fromCharCode(b); });
-    const content = btoa(bin);
-
     const apiUrl = `https://api.github.com/repos/${file.repo}/contents/${encodeURI(file.path)}`;
     const body = {
         message: commitMessage || ('Update ' + file.name),
-        content: content,
+        content: base64Content,
         branch: file.branch,
     };
     if (file.sha) body.sha = file.sha;   // required when updating an existing file
@@ -4496,6 +5501,19 @@ async function ghCommitJsonFile(file, dataObj, commitMessage) {
     return (result && result.content && result.content.sha) || file.sha;
 }
 
+// Shared: commit a JS object as a JSON file to GitHub (creates or updates).
+// `file` = { repo, branch, path, name, sha }. Returns the new sha.
+async function ghCommitJsonFile(file, dataObj, commitMessage) {
+    const json = JSON.stringify(aimcqCanonicalizeExport(dataObj), null, 2);
+    aimcqWarnPassageIssues(dataObj, file && file.name);
+    // base64-encode the UTF-8 content (handles Hindi and all Unicode).
+    const bytes = new TextEncoder().encode(json);
+    let bin = '';
+    bytes.forEach(b => { bin += String.fromCharCode(b); });
+    const content = btoa(bin);
+    return ghCommitRawFile(file, content, commitMessage);
+}
+
 // Commit the Figure Updater's JSON back to its linked GitHub file.
 async function figUpdateToGitHub() {
     if (!figState.data) {
@@ -4514,7 +5532,15 @@ async function figUpdateToGitHub() {
     lucide.createIcons();
     try {
         f.sha = await ghCommitJsonFile(f, figState.data, 'Update MCQ figures — ' + f.name);
-        showToast('Saved to GitHub', `Committed to ${f.repo}@${f.branch} — ${f.path}.`, 'success');
+        // Force-purge jsDelivr so the updated figures JSON is live immediately.
+        btn.innerHTML = '<i data-lucide="loader-2" class="w-3.5 h-3.5 animate-spin"></i> Purging CDN...';
+        lucide.createIcons();
+        try {
+            await jsdelivrPurgeFile(f.repo, f.branch, f.path);
+            showToast('Saved & Live on CDN', `Committed to ${f.repo}@${f.branch} — ${f.path}. jsDelivr cache purged — changes are live NOW.`, 'success');
+        } catch (purgeErr) {
+            showToast('Saved to GitHub (purge failed)', `Commit succeeded, but: ${purgeErr.message || purgeErr}`, 'info');
+        }
     } catch (err) {
         showToast('Update failed', err.message || String(err), 'error');
     } finally {
@@ -4544,6 +5570,7 @@ async function figUpdateToGitHub() {
 // Commit a brand-new JSON file into the repo — into an existing folder
 // or a new one (folders are created implicitly by the Contents API).
 let ghUploadData = null;        // parsed JSON object staged for upload
+let ghUploadRaw = null;         // { content: base64 } staged for a PDF/image/HTML upload
 
 function ghSetUploadStatus(msg, kind) {
     const el = document.getElementById('fig-gh-up-status');
@@ -4556,12 +5583,15 @@ function ghSetUploadStatus(msg, kind) {
 
 function ghResetUploadForm() {
     ghUploadData = null;
+    ghUploadRaw = null;
     const set = (id, v) => { const el = document.getElementById(id); if (el) el.value = v; };
     set('fig-gh-up-folder', '');
     set('fig-gh-up-name', '');
     const fn = document.getElementById('fig-gh-up-filename');
     if (fn) {
-        fn.textContent = 'Click or drag a .json file here';
+        fn.textContent = ghSupportsExtraTypes()
+            ? 'Click or drag a .json, .pdf, image, or .html file here'
+            : 'Click or drag a .json file here';
         fn.classList.remove('text-green-700', 'font-bold');
     }
     ghSetUploadStatus('', '');
@@ -4570,10 +5600,27 @@ function ghResetUploadForm() {
 // Stage a parsed JSON object for upload, with a suggested file name.
 function ghStageUpload(data, suggestedName) {
     ghUploadData = data;
+    ghUploadRaw = null;
     const fn = document.getElementById('fig-gh-up-filename');
     if (fn) {
         fn.textContent = '\u2713 ' + suggestedName + ' \u2014 ' +
             (Array.isArray(data.posts) ? data.posts.length + ' questions' : 'JSON ready');
+        fn.classList.add('text-green-700', 'font-bold');
+    }
+    const nameIn = document.getElementById('fig-gh-up-name');
+    if (nameIn && !nameIn.value) nameIn.value = suggestedName;
+    ghSetUploadStatus('', '');
+}
+
+// Stage a raw (binary-safe, base64) file — PDF, image, or HTML — for upload.
+// Editor-only: these commit as-is, with no JSON parsing or canonicalization.
+function ghStageUploadRaw(base64, suggestedName) {
+    ghUploadRaw = { content: base64 };
+    ghUploadData = null;
+    const fn = document.getElementById('fig-gh-up-filename');
+    if (fn) {
+        const kb = Math.max(1, Math.ceil(base64.length * 0.75 / 1024));
+        fn.textContent = '\u2713 ' + suggestedName + ' \u2014 ~' + kb + ' KB ready';
         fn.classList.add('text-green-700', 'font-bold');
     }
     const nameIn = document.getElementById('fig-gh-up-name');
@@ -4590,8 +5637,11 @@ async function ghUploadNewFile() {
         ghSwitchTab('creds');
         return;
     }
-    if (!ghUploadData) {
-        ghSetUploadStatus('Choose a JSON file (or use the loaded JSON) first.', 'err');
+    if (!ghUploadData && !ghUploadRaw) {
+        ghSetUploadStatus(
+            ghSupportsExtraTypes()
+                ? 'Choose a file (JSON, PDF, image, or HTML) — or use the loaded JSON — first.'
+                : 'Choose a JSON file (or use the loaded JSON) first.', 'err');
         return;
     }
     let folder = (document.getElementById('fig-gh-up-folder').value || '').trim()
@@ -4599,7 +5649,14 @@ async function ghUploadNewFile() {
     let name = (document.getElementById('fig-gh-up-name').value || '').trim()
         .replace(/^\/+/, '');
     if (!name) { ghSetUploadStatus('Enter a file name.', 'err'); return; }
-    if (!/\.json$/i.test(name)) name += '.json';
+    if (ghUploadRaw) {
+        if (!/\.[a-z0-9]+$/i.test(name)) {
+            ghSetUploadStatus('Include a file extension, e.g. figure.png or notes.pdf.', 'err');
+            return;
+        }
+    } else if (!/\.json$/i.test(name)) {
+        name += '.json';
+    }
     const path = (folder ? folder + '/' : '') + name;
 
     const btn = document.getElementById('fig-gh-up-submit');
@@ -4621,17 +5678,23 @@ async function ghUploadNewFile() {
 
         // Create the file (no sha = create).
         const newFile = { repo: c.repo, branch: c.branch, path: path, name: name, sha: null };
-        const sha = await ghCommitJsonFile(newFile, ghUploadData, 'Add MCQ JSON — ' + name);
+        const sha = ghUploadRaw
+            ? await ghCommitRawFile(newFile, ghUploadRaw.content, 'Add file — ' + name)
+            : await ghCommitJsonFile(newFile, ghUploadData, 'Add MCQ JSON — ' + name);
         newFile.sha = sha;
 
         ghSetUploadStatus('\u2713 Uploaded to ' + c.repo + '@' + c.branch + ' — ' + path, 'ok');
-        showToast('Uploaded', 'New JSON committed to GitHub.', 'success');
+        showToast('Uploaded', ghUploadRaw ? 'File committed to GitHub.' : 'New JSON committed to GitHub.', 'success');
         ghAddRecent(newFile);
 
         // Optionally load it straight into the tool.
         const loadAfter = document.getElementById('fig-gh-up-loadafter');
         if (loadAfter && loadAfter.checked) {
-            if (ghPickerTarget === 'editor') {
+            if (ghUploadRaw) {
+                // PDF/image/HTML — nothing to "load" as question data;
+                // copy its CDN link instead so it can be pasted in.
+                ghCopyToClipboard(ghJsonCdnUrl(c.repo, c.branch, path), 'jsDelivr CDN link for "' + name + '"');
+            } else if (ghPickerTarget === 'editor') {
                 deliverGitHubFileToEditor(newFile, ghUploadData);
             } else if (ghPickerTarget === 'quizbuilder') {
                 deliverGitHubFileToQuizBuilder(newFile, ghUploadData);
@@ -4659,19 +5722,37 @@ async function ghUploadNewFile() {
 
     function handleFile(file) {
         if (!file) return;
-        if (!/\.json$/i.test(file.name)) {
-            ghSetUploadStatus('Please choose a .json file.', 'err'); return;
+        const isJson = /\.json$/i.test(file.name);
+        const ext = (file.name.split('.').pop() || '').toLowerCase();
+        const isExtra = ghSupportsExtraTypes() && GH_EDITOR_EXTRA_EXTS.indexOf(ext) !== -1;
+        if (!isJson && !isExtra) {
+            ghSetUploadStatus(
+                ghSupportsExtraTypes()
+                    ? 'Please choose a .json, .pdf, image, or .html file.'
+                    : 'Please choose a .json file.', 'err');
+            return;
         }
+        if (isJson) {
+            const reader = new FileReader();
+            reader.onload = () => {
+                try {
+                    const data = JSON.parse(reader.result);
+                    ghStageUpload(data, file.name);
+                } catch (e) {
+                    ghSetUploadStatus('Could not parse JSON: ' + e.message, 'err');
+                }
+            };
+            reader.readAsText(file);
+            return;
+        }
+        // PDF / image / HTML — read binary-safe as base64 for a direct commit.
         const reader = new FileReader();
         reader.onload = () => {
-            try {
-                const data = JSON.parse(reader.result);
-                ghStageUpload(data, file.name);
-            } catch (e) {
-                ghSetUploadStatus('Could not parse JSON: ' + e.message, 'err');
-            }
+            const base64 = String(reader.result).split(',')[1] || '';
+            ghStageUploadRaw(base64, file.name);
         };
-        reader.readAsText(file);
+        reader.onerror = () => ghSetUploadStatus('Could not read the file.', 'err');
+        reader.readAsDataURL(file);
     }
     if (fileIn) fileIn.addEventListener('change', e => handleFile(e.target.files[0]));
     if (zone) {
@@ -4803,9 +5884,9 @@ async function ghDeleteBrowse() {
         files.forEach(function(f) {
             const row = document.createElement('div');
             row.className = 'gd-file-row';
-            const isJson = /\.json$/i.test(f.name);
+            const delKind = ghFileKind(f.name);
             row.innerHTML =
-                '<i data-lucide="' + (isJson ? 'file-json' : 'file') + '" class="w-4 h-4 ' + (isJson ? 'text-blue-500' : 'text-gray-400') + ' flex-shrink-0"></i>' +
+                '<i data-lucide="' + ghFileIconFor(delKind) + '" class="w-4 h-4 ' + ghFileColorFor(delKind) + ' flex-shrink-0"></i>' +
                 '<span class="gd-file-row-name" style="flex:1">' + escapeHtml(f.name) + '</span>' +
                 '<span class="gh-del-file-btn" style="display:inline-flex;align-items:center;gap:3px;font-size:11px;font-weight:600;padding:2px 8px;border-radius:6px;background:#fee2e2;color:#b91c1c;border:1px solid #fecaca;cursor:pointer;flex-shrink:0" ' +
                   'data-fpath="' + escapeAttr(f.path) + '" data-fname="' + escapeAttr(f.name) + '" data-sha="' + escapeAttr(f.sha || '') + '">' +
@@ -5068,9 +6149,20 @@ async function editorUpdateToGitHub() {
         editorGitHubFile.sha = await ghCommitJsonFile(
             editorGitHubFile, editorExportData,
             'Update MCQ JSON — ' + editorGitHubFile.name);
-        showToast('Saved to GitHub',
-            `Committed to ${editorGitHubFile.repo}@${editorGitHubFile.branch} — ${editorGitHubFile.path}.`,
-            'success');
+        // Force-purge the jsDelivr cache so the committed change is served
+        // immediately on the existing CDN URL (no ~12h propagation wait).
+        btn.innerHTML = '<i data-lucide="loader-2" class="w-5 h-5 animate-spin"></i> Purging CDN cache...';
+        lucide.createIcons();
+        try {
+            await jsdelivrPurgeFile(editorGitHubFile.repo, editorGitHubFile.branch, editorGitHubFile.path);
+            showToast('Saved & Live on CDN',
+                `Committed to ${editorGitHubFile.repo}@${editorGitHubFile.branch} — ${editorGitHubFile.path}. jsDelivr cache purged — changes are live NOW.`,
+                'success');
+        } catch (purgeErr) {
+            showToast('Saved to GitHub (purge failed)',
+                `Commit succeeded, but: ${purgeErr.message || purgeErr}`,
+                'info');
+        }
     } catch (err) {
         showToast('Update failed', err.message || String(err), 'error');
     } finally {
@@ -5815,3 +6907,3270 @@ function qbBuildJson() {
 })();
 
 
+
+/* ====================================================================
+   BOOT BEACON + GITHUB PICKER RESILIENCE  (v1.3)
+   --------------------------------------------------------------------
+   1. Logs a version line so you can verify in DevTools which core the
+      CDN actually served. If you do NOT see this line in the console,
+      the file on the CDN is stale, truncated, or failed to execute —
+      that is why inline onclick handlers (like the GitHub buttons) do
+      nothing.
+   2. Explicitly exposes the GitHub picker functions on window and adds
+      addEventListener bindings for the three "Load from GitHub"
+      buttons, so the picker opens even in environments that block
+      inline onclick handlers (strict CSP). Opening/closing the modal is
+      idempotent, so double-firing alongside the inline handler is safe.
+   ==================================================================== */
+(function () {
+    try {
+        if (typeof figGitHubOpenPicker === 'function') {
+            window.figGitHubOpenPicker  = figGitHubOpenPicker;
+            window.figGitHubClosePicker = figGitHubClosePicker;
+        }
+        var bind = function (id, target) {
+            var el = document.getElementById(id);
+            if (el && !el.__mcqsGhBound && typeof figGitHubOpenPicker === 'function') {
+                el.__mcqsGhBound = true;
+                el.addEventListener('click', function () { figGitHubOpenPicker(target); });
+            }
+        };
+        bind('editor-btn-load-github', 'editor');
+        bind('qb-btn-load-github', 'quizbuilder');
+        bind('fig-btn-load-github', undefined);
+        var closeBtnModal = document.getElementById('fig-gh-picker-modal');
+        if (closeBtnModal && typeof figGitHubClosePicker === 'function') {
+            var backdrop = closeBtnModal.querySelector('.gd-modal-backdrop');
+            if (backdrop && !backdrop.__mcqsGhBound) {
+                backdrop.__mcqsGhBound = true;
+                backdrop.addEventListener('click', figGitHubClosePicker);
+            }
+        }
+        if (window.console && console.info) {
+            console.info('[mcqs-tool] core v2.9.3 (extractor: optional Hindi-language explanation for non-Hindi questions) loaded OK — GitHub picker ready.');
+        }
+    } catch (e) {
+        if (window.console && console.error) {
+            console.error('[mcqs-tool] boot check failed:', e && e.message);
+        }
+    }
+})();
+
+// ============================================================
+// ============ AI QUESTION UPDATE (GEMINI API) ===============
+// ============================================================
+// Settings live in the Question Editor tab; the analysis runs
+// inside the per-question edit modal. Flow:
+//   1. User saves a Gemini API key (localStorage only).
+//   2. In the edit modal, "Analyze Question" sends the question,
+//      options, the currently-marked answer, an OPTIONAL user-
+//      suggested option, and the pre-existing explanation (as a
+//      format template) to Gemini.
+//   3. Gemini independently solves the question, cross-checks the
+//      marked answer, verifies the user's suggestion (if any) and
+//      drafts a new explanation that replicates the pre-existing
+//      explanation's exact HTML format.
+//   4. Nothing touches the data until the user clicks Apply, and
+//      even then it only fills the modal — "Save Changes" commits.
+
+const AI_GEMINI_CFG_KEY = 'aimcq_gemini_cfg';
+let aiCfg = { key: '', model: 'gemini-2.5-flash' };
+let qeAiLast = null;          // last analysis result for the open question
+let qeAiBusy = false;
+
+// ---------- config persistence ----------
+function aiLoadCfg() {
+    try {
+        const raw = localStorage.getItem(AI_GEMINI_CFG_KEY);
+        if (raw) {
+            const c = JSON.parse(raw);
+            if (c && typeof c === 'object') {
+                aiCfg.key   = c.key   || '';
+                aiCfg.model = c.model || 'gemini-2.5-flash';
+            }
+        }
+    } catch (e) {}
+    aiSyncSettingsUI();
+    aiUpdateStatusChips();
+}
+
+function aiPersistCfg() {
+    try { localStorage.setItem(AI_GEMINI_CFG_KEY, JSON.stringify(aiCfg)); } catch (e) {}
+}
+
+function aiConfigured() { return !!(aiCfg.key && aiCfg.key.trim()); }
+
+function aiEffectiveModel() { return (aiCfg.model || 'gemini-2.5-flash').trim(); }
+
+// ---------- settings UI ----------
+function aiToggleSettings() {
+    const body = document.getElementById('ai-settings-body');
+    const chev = document.getElementById('ai-settings-chevron');
+    if (!body) return;
+    const open = body.classList.toggle('hidden');
+    if (chev) chev.style.transform = open ? '' : 'rotate(180deg)';
+    if (!open) aiSyncSettingsUI();
+}
+
+function aiSyncSettingsUI() {
+    const keyEl = document.getElementById('ai-api-key');
+    const modelEl = document.getElementById('ai-model');
+    const customEl = document.getElementById('ai-model-custom');
+    if (!keyEl || !modelEl) return;
+    keyEl.value = aiCfg.key || '';
+    const preset = ['gemini-2.5-flash','gemini-2.5-pro','gemini-2.0-flash','gemini-1.5-flash'];
+    if (preset.includes(aiCfg.model)) {
+        modelEl.value = aiCfg.model;
+        if (customEl) { customEl.classList.add('hidden'); customEl.value = ''; }
+    } else {
+        modelEl.value = 'custom';
+        if (customEl) { customEl.classList.remove('hidden'); customEl.value = aiCfg.model || ''; }
+    }
+}
+
+function aiToggleKeyVisibility() {
+    const keyEl = document.getElementById('ai-api-key');
+    const eye = document.getElementById('ai-key-eye');
+    if (!keyEl) return;
+    const show = keyEl.type === 'password';
+    keyEl.type = show ? 'text' : 'password';
+    if (eye) { eye.setAttribute('data-lucide', show ? 'eye-off' : 'eye'); lucide.createIcons(); }
+}
+
+function aiReadSettingsForm() {
+    const keyEl = document.getElementById('ai-api-key');
+    const modelEl = document.getElementById('ai-model');
+    const customEl = document.getElementById('ai-model-custom');
+    const key = keyEl ? aiSanitizeKey(keyEl.value) : '';
+    let model = modelEl ? modelEl.value : 'gemini-2.5-flash';
+    if (model === 'custom') model = (customEl && customEl.value.trim()) || 'gemini-2.5-flash';
+    return { key, model };
+}
+
+function aiSaveSettings() {
+    const { key, model } = aiReadSettingsForm();
+    if (!key) { showToast('API Key Missing', 'Paste your Gemini API key first.', 'error'); return; }
+    aiCfg.key = key;
+    aiCfg.model = model;
+    aiPersistCfg();
+    aiUpdateStatusChips();
+    showToast('AI Settings Saved', `Gemini model: ${model}. Key stored in this browser only.`, 'success');
+}
+
+function aiClearSettings() {
+    aiCfg = { key: '', model: 'gemini-2.5-flash' };
+    try { localStorage.removeItem(AI_GEMINI_CFG_KEY); } catch (e) {}
+    aiSyncSettingsUI();
+    aiUpdateStatusChips();
+    const res = document.getElementById('ai-test-result');
+    if (res) res.textContent = '';
+    showToast('AI Settings Cleared', 'Gemini API key removed from this browser.', 'info');
+}
+
+function aiUpdateStatusChips() {
+    const on = aiConfigured();
+    [['ai-settings-status', on ? `Ready · ${aiEffectiveModel()}` : 'Not configured'],
+     ['qe-ai-status',       on ? `Ready · ${aiEffectiveModel()}` : 'Not configured — see AI settings in Editor tab']]
+    .forEach(([id, label]) => {
+        const el = document.getElementById(id);
+        if (!el) return;
+        el.textContent = label;
+        el.classList.toggle('on', on);
+        el.classList.toggle('off', !on);
+    });
+    const btn = document.getElementById('qe-ai-analyze-btn');
+    if (btn) btn.disabled = !on || qeAiBusy;
+}
+
+async function aiTestConnection() {
+    const { key, model } = aiReadSettingsForm();
+    const res = document.getElementById('ai-test-result');
+    if (!key) { if (res) { res.textContent = 'Enter a key first.'; res.style.color = '#dc2626'; } return; }
+    if (res) { res.textContent = 'Testing…'; res.style.color = '#6b7280'; }
+    try {
+        const out = await aiGeminiRequest('Reply with exactly: OK', { key, model, plainText: true });
+        if (res) {
+            const ok = /OK/i.test(out || '');
+            res.textContent = ok ? `✓ Connected (${model})` : '✓ Reached API (unexpected reply)';
+            res.style.color = '#059669';
+        }
+    } catch (err) {
+        if (res) { res.textContent = '✗ ' + aiFriendlyError(err); res.style.color = '#dc2626'; }
+    }
+}
+
+// ---------- Gemini transport ----------
+// Strip characters that commonly sneak into pasted keys (quotes, spaces,
+// newlines, zero-width chars) — a top cause of "invalid/rejected key" errors.
+function aiSanitizeKey(k) {
+    return String(k || '').replace(/["'`\u200B-\u200D\uFEFF]/g, '').replace(/\s+/g, '');
+}
+
+async function aiGeminiRequest(prompt, opts) {
+    opts = opts || {};
+    const key = aiSanitizeKey(opts.key || aiCfg.key);
+    const model = opts.model || aiEffectiveModel();
+    // Auth via the x-goog-api-key header (Google's recommended method) —
+    // avoids query-param edge cases and keeps the key out of URLs/logs.
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`;
+
+    // Multimodal support: opts.imageB64 (+ opts.imageMime) attaches an image
+    // part before the text prompt — used by the Question Extractor.
+    // opts.imagesB64 (array) attaches MULTIPLE image parts in order — used
+    // when a single question spans several crops (e.g. continues on the next
+    // page, or the same question in another language on the next page).
+    const userParts = [];
+    const mime = opts.imageMime || 'image/webp';
+    if (Array.isArray(opts.imagesB64) && opts.imagesB64.length) {
+        opts.imagesB64.forEach(b64 => {
+            if (b64) userParts.push({ inline_data: { mime_type: mime, data: b64 } });
+        });
+    } else if (opts.imageB64) {
+        userParts.push({ inline_data: { mime_type: mime, data: opts.imageB64 } });
+    }
+    userParts.push({ text: prompt });
+
+    const body = {
+        contents: [{ role: 'user', parts: userParts }],
+        generationConfig: opts.plainText
+            ? { temperature: 0 }
+            : { temperature: 0.2, responseMimeType: 'application/json' }
+    };
+
+    const resp = await fetch(url, {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            'x-goog-api-key': key,
+        },
+        body: JSON.stringify(body)
+    });
+
+    if (!resp.ok) {
+        let detail = '', reason = '', gstatus = '';
+        try {
+            const j = await resp.json();
+            if (j.error) {
+                detail = j.error.message || '';
+                gstatus = j.error.status || '';
+                // details[].reason carries the precise cause, e.g.
+                // API_KEY_INVALID, SERVICE_DISABLED, API_KEY_HTTP_REFERRER_BLOCKED
+                (j.error.details || []).forEach(d => {
+                    if (d && d.reason && !reason) reason = d.reason;
+                });
+            }
+        } catch (e) {}
+        const err = new Error(detail || `HTTP ${resp.status}`);
+        err.status = resp.status;
+        err.reason = reason || gstatus;
+        throw err;
+    }
+
+    const data = await resp.json();
+    const cand = data.candidates && data.candidates[0];
+    const parts = (cand && cand.content && cand.content.parts) || [];
+    const text = parts.map(p => p.text || '').join('');
+    if (!text) {
+        const block = (data.promptFeedback && data.promptFeedback.blockReason) || (cand && cand.finishReason);
+        throw new Error(block ? `Empty response (${block})` : 'Empty response from Gemini');
+    }
+    return text;
+}
+
+function aiParseJson(text) {
+    let t = String(text || '').trim()
+        .replace(/^```(?:json)?\s*/i, '')
+        .replace(/```\s*$/i, '')
+        .trim();
+    // If extra prose sneaks in, grab the outermost JSON object.
+    if (t[0] !== '{') {
+        const s = t.indexOf('{'), e = t.lastIndexOf('}');
+        if (s !== -1 && e > s) t = t.slice(s, e + 1);
+    }
+    return JSON.parse(t);
+}
+
+function aiFriendlyError(err) {
+    const msg = (err && err.message) || 'Unknown error';
+    const reason = (err && err.reason) || '';
+
+    // Targeted guidance based on Google's precise error reason.
+    if (/API_KEY_INVALID/i.test(reason) || (err && err.status === 400 && /API key/i.test(msg))) {
+        return 'This API key is invalid. Re-copy the FULL key from https://aistudio.google.com/app/apikey (watch for missing characters or extra spaces/quotes).';
+    }
+    if (/API_KEY_HTTP_REFERRER_BLOCKED|API_KEY_IP_ADDRESS_BLOCKED|API_KEY_ANDROID_APP_BLOCKED|API_KEY_IOS_APP_BLOCKED/i.test(reason)) {
+        return 'This key has application restrictions (website/IP/app) that block this page. In Google Cloud Console → APIs & Services → Credentials, open the key and set "Application restrictions" to "None" — or create an unrestricted key in AI Studio.';
+    }
+    if (/SERVICE_DISABLED/i.test(reason)) {
+        return 'The "Generative Language API" is disabled for this key\'s Google Cloud project. Enable it in Cloud Console, or simply create the key at https://aistudio.google.com/app/apikey (AI Studio keys work out of the box).';
+    }
+    if (/API_KEY_SERVICE_BLOCKED/i.test(reason)) {
+        return 'This key is not allowed to call the Generative Language API (API restrictions on the key). Edit the key\'s "API restrictions" to include the Generative Language API, or create a fresh key in AI Studio.';
+    }
+    if (err && (err.status === 401 || err.status === 403)) {
+        return 'API key rejected (HTTP ' + err.status + (reason ? ' · ' + reason : '') + '). Common causes for free-tier keys: (1) key created in Google Cloud without the Generative Language API enabled — create it at https://aistudio.google.com/app/apikey instead; (2) key has website/IP restrictions — set restrictions to "None"; (3) key was deleted/regenerated. Google says: ' + msg;
+    }
+    if (err && err.status === 404) return 'Model not found — pick another model in AI settings.';
+    if (err && err.status === 429) return 'Rate limit / quota exceeded — wait a moment and retry.';
+    if (/FAILED_PRECONDITION/i.test(reason) || /User location is not supported/i.test(msg)) {
+        return 'Google reports your region is not supported for the free Gemini API tier with this key. Google says: ' + msg;
+    }
+    if (/Failed to fetch|NetworkError/i.test(msg)) return 'Network error — check your connection (or an ad-blocker blocking googleapis.com).';
+    return msg;
+}
+
+// ---------- HTML → analysable plain text ----------
+function aiHtmlToPlain(html) {
+    const div = document.createElement('div');
+    div.innerHTML = html || '';
+    div.querySelectorAll('img').forEach(img => {
+        img.replaceWith(document.createTextNode(' [FIGURE: ' + (img.getAttribute('alt') || 'image') + '] '));
+    });
+    div.querySelectorAll('br').forEach(br => br.replaceWith(document.createTextNode('\n')));
+    div.querySelectorAll('p,div,li,tr,h1,h2,h3,h4').forEach(el => el.append(document.createTextNode('\n')));
+    return (div.textContent || '').replace(/\n{3,}/g, '\n\n').replace(/[ \t]+/g, ' ').trim();
+}
+
+// ---------- modal lifecycle ----------
+function qeAiOnModalOpen(optionCount) {
+    qeAiLast = null;
+    qeAiBusy = false;
+    const err = document.getElementById('qe-ai-error');
+    const result = document.getElementById('qe-ai-result');
+    if (err) { err.classList.add('hidden'); err.textContent = ''; }
+    if (result) result.classList.add('hidden');
+    qeAiSetBusy(false);
+
+    // Populate the optional user-suggestion dropdown (A, B, C, …)
+    const sel = document.getElementById('qe-ai-suggest');
+    if (sel) {
+        sel.innerHTML = '<option value="">None — let AI decide independently</option>';
+        for (let i = 0; i < (optionCount || 0); i++) {
+            const letter = OPTION_LETTERS[i] || String(i + 1);
+            const o = document.createElement('option');
+            o.value = String(i);
+            o.textContent = `Option (${letter}) — I think this is correct`;
+            sel.appendChild(o);
+        }
+    }
+    aiUpdateStatusChips();
+}
+
+function qeAiSetBusy(busy) {
+    qeAiBusy = busy;
+    const btn = document.getElementById('qe-ai-analyze-btn');
+    const label = document.getElementById('qe-ai-analyze-label');
+    if (!btn) return;
+    btn.disabled = busy || !aiConfigured();
+    if (label) label.innerHTML = busy
+        ? '<span class="qe-ai-spinner"></span> Analyzing…'
+        : 'Analyze Question';
+}
+
+// ---------- collect the LIVE state of the modal ----------
+function qeAiCollect() {
+    const q = {
+        question: getReValue('en-question'),
+        explanation: getReValue('en-explanation'),
+        options: [],
+        marked: 0,
+        bilingual: editorIsBilingual(),
+        // The primary panel holds the file's sole language for single-language
+        // files (which may be Hindi!) and English for bilingual files.
+        primaryLang: editorIsBilingual() ? 'en' : ((typeof _editorLangs !== 'undefined' && _editorLangs[0]) || 'en'),
+        hi: null
+    };
+    document.querySelectorAll('#qe-en-options .opt-editor-wrap').forEach(w => {
+        q.options.push(w.querySelector('.opt-compose').innerHTML);
+    });
+    const checked = document.querySelector('input[name="qe-correct-en"]:checked');
+    q.marked = checked ? parseInt(checked.value) : 0;
+
+    if (q.bilingual) {
+        q.hi = {
+            question: getReValue('hi-question'),
+            explanation: getReValue('hi-explanation'),
+            options: []
+        };
+        document.querySelectorAll('#qe-hi-options .opt-editor-wrap').forEach(w => {
+            q.hi.options.push(w.querySelector('.opt-compose').innerHTML);
+        });
+    }
+    return q;
+}
+
+// ---------- prompt ----------
+// LaTeX notation rule shared by every AI prompt in the tool. Applies to
+// math AND non-math content (chemistry, geography, GK, units, dates...):
+// all sub/superscripts and degree symbols go through KaTeX-renderable LaTeX.
+const AI_LATEX_NOTATION_RULE =
+    'NOTATION — LaTeX for scripts & degrees (critical, applies to BOTH math and non-math content): ' +
+    'ALL superscripts, subscripts and degree symbols MUST be written as LaTeX inside $...$ delimiters, wherever they occur — in the question text, in every option, and throughout the explanation — regardless of subject (mathematics, physics, chemistry, biology, geography, general knowledge). ' +
+    'Examples: powers/exponents $x^2$, $10^{-3}$, $2^n$; units $m^2$, $cm^3$, $km^2$, $m/s^2$; chemical formulas $H_2O$, $CO_2$, $C_6H_{12}O_6$; ions/charges $Na^+$, $Ca^{2+}$, $SO_4^{2-}$; isotopes/mass numbers $^{235}U$, $^{14}C$; angles, temperatures and coordinates $45^\\circ$, $90^\\circ$, $30^\\circ C$, $-5^\\circ C$, $23.5^\\circ N$, $82.5^\\circ E$; indexed terms $a_n$, $x_1$, $v_0$. ' +
+    'Scripts longer than one character need braces: $10^{-3}$ (not $10^-3$), $SO_4^{2-}$, $C_6H_{12}O_6$. ' +
+    'NEVER use raw Unicode superscript/subscript/degree characters (\u00b2 \u00b3 \u2070 \u2075 \u2081 \u2082 \u207a \u207b \u00b0 \u00bd etc.) and NEVER use HTML <sub>/<sup> tags for any of these — convert every occurrence (including ones printed that way in the source image/text) into the LaTeX form. ' +
+    'Ordinary words like "degree"/"degrees" written out with no numeric value stay as plain text.';
+
+// Shared instruction for how thorough the generated explanation must be.
+// "detailed" is written for weak students: teach, don't just state.
+function aiDetailInstruction(level, pName) {
+    if (level === 'concise') {
+        return 'EXPLANATION DEPTH: keep the explanation brief and to the point — 2-4 sentences covering only the essential reasoning.';
+    }
+    if (level === 'detailed') {
+        return 'EXPLANATION DEPTH (critical — DETAILED teaching mode): the explanation must be thorough enough that a WEAK student meeting this topic for the first time can fully follow it. Do NOT give a short, to-the-point answer. Requirements: '
+            + '(1) briefly define/recall the key concept, term, or formula involved and WHY it applies to this question, in simple language; '
+            + '(2) show EVERY intermediate step of the working — never skip a calculation, substitution, or logical link, even trivial ones; '
+            + '(3) after each step, add a short plain-language reason for what was done and why; '
+            + '(4) end by clearly restating the final answer/value and, where genuinely helpful, add one line about the most common mistake or confusion on such questions; '
+            + '(5) target roughly 120-300 words (longer for multi-step numerical problems) — a 2-3 sentence explanation is NOT acceptable in this mode; '
+            + `(6) keep the language simple and encouraging, entirely in ${pName}, with all math in LaTeX ($...$). `
+            + 'This depth requirement works together with (not instead of) the step-by-step and no-option-reference rules.';
+    }
+    return '';   // standard — no extra depth instruction
+}
+
+// Shared instruction block for step-by-step math explanations. Applies
+// ONLY when the question is numerical/mathematical/quantitative in nature
+// (calculations, formulas, equations, numerical reasoning, physics/chem/
+// math problems) — plain factual or conceptual questions are unaffected.
+function aiStepsInstruction(pName) {
+    return `STEP-BY-STEP MATH SOLUTIONS (when applicable): if — and ONLY if — the question is numerical/mathematical/quantitative (requires a calculation, formula, equation, or step-wise numerical/logical derivation), structure the explanation as clearly numbered steps instead of a dense paragraph: each step on its own line as "<p><b>Step 1:</b> ...</p>", "<p><b>Step 2:</b> ...</p>", etc. (translate the word "Step" into ${pName} if ${pName} is not English), ending with a final step that states the resulting value/answer. Keep all math in LaTeX ($...$). Steps must still obey the FORMAT RULE (fit within the pre-existing explanation's overall HTML container/structure where applicable) and the NO OPTION REFERENCES rule (no option letters in any step). For purely conceptual/factual/definitional questions with no calculation involved, do NOT force artificial steps — keep the existing explanation style.`;
+}
+
+function qeAiBuildPrompt(q, suggestIdx, wantSteps, detailLevel) {
+    const L = i => OPTION_LETTERS[i] || String(i + 1);
+    // Human-readable name of the primary content language. For a bilingual
+    // file the primary side is English; for a single-language file it is the
+    // file's sole language (e.g. HINDI for a Hindi-only paper).
+    const P_NAMES = { en: 'ENGLISH', hi: 'HINDI' };
+    const pName = P_NAMES[q.primaryLang] || String(q.primaryLang || 'en').toUpperCase();
+    const lines = [];
+
+    lines.push('You are an expert exam-question reviewer and subject-matter solver.');
+    lines.push('Your job: independently solve the multiple-choice question below, then cross-check whether the currently marked correct option is REALLY correct. Be careful and rigorous — do not assume the marked answer is right.');
+    lines.push('');
+    lines.push(`THE QUESTION'S CONTENT LANGUAGE IS ${pName}. All generated explanation content must be in the question's own language — never translate it to another language.`);
+    lines.push('');
+    lines.push(AI_LATEX_NOTATION_RULE);
+    lines.push('');
+    lines.push('QUESTION (plain text; may contain LaTeX between $...$ / \\(...\\) and [FIGURE: ...] placeholders):');
+    lines.push(aiHtmlToPlain(q.question) || '(empty)');
+    lines.push('');
+    lines.push('OPTIONS:');
+    q.options.forEach((o, i) => lines.push(`(${L(i)}) ${aiHtmlToPlain(o) || '(empty)'}`));
+    lines.push('');
+    lines.push(`CURRENTLY MARKED CORRECT OPTION: (${L(q.marked)})  [0-based index ${q.marked}]`);
+
+    if (suggestIdx !== null && suggestIdx !== undefined) {
+        lines.push('');
+        lines.push(`USER SUGGESTION: The user suspects option (${L(suggestIdx)}) [0-based index ${suggestIdx}] is the true correct answer.`);
+        lines.push('Explicitly evaluate this suggestion against your own independent solution and report a verdict in "user_suggestion_verdict" (state clearly whether the user is right or wrong, and why in 1-3 sentences). The user suggestion is a hypothesis to check — do NOT blindly adopt it.');
+    }
+
+    lines.push('');
+    if ((q.explanation || '').trim()) {
+        lines.push('PRE-EXISTING EXPLANATION (raw HTML). THIS DEFINES THE REQUIRED OUTPUT FORMAT:');
+        lines.push('-----BEGIN EXPLANATION HTML-----');
+        lines.push(q.explanation);
+        lines.push('-----END EXPLANATION HTML-----');
+        lines.push('');
+        lines.push(`FORMAT RULE (critical): your new explanation ("explanation_html") MUST be written entirely in ${pName} — the SAME language as the question and the pre-existing explanation above — and MUST replicate this pre-existing explanation's HTML format EXACTLY — same tags, same inline styles/classes, same structure and section order, bullet lists, tables, LaTeX delimiters, emphasis conventions, and approximate length. Change ONLY the substantive content so that it correctly justifies the truly correct answer.`);
+        lines.push('NO OPTION REFERENCES (critical): the explanation must NOT mention option letters or labels (A/B/C/D), the word "option" / "विकल्प", or phrases like "Correct Answer: (X)" / "सही उत्तर: (X)" / "Option B is right" / "the other options are wrong". Explain the answer\'s substance directly — state the actual answer content itself and justify it conceptually. If the pre-existing explanation contains any option references or per-option elimination parts, replace them with the equivalent substance-based statements (naming the actual answer text/value instead of its letter) while keeping every other aspect of the formatting identical. Do not add new sections that the sample does not have, and do not drop sections it does have.');
+        if (wantSteps) lines.push(aiStepsInstruction(pName));
+        const detailInstr = aiDetailInstruction(detailLevel, pName);
+        if (detailInstr) {
+            lines.push(detailInstr);
+            if (detailLevel === 'detailed') lines.push('LENGTH OVERRIDE: the EXPLANATION DEPTH requirement above takes precedence over the "approximate length" part of the FORMAT RULE — keep the sample\'s tags, styling and structural conventions, but expand the substance to the required depth even if that makes it much longer than the sample.');
+        }
+    } else {
+        lines.push(`PRE-EXISTING EXPLANATION: (none). Use this simple clean HTML format for the new explanation, written entirely in ${pName} (the question's own language): <p><b>concise statement of the correct answer's substance (the actual fact/value/concept — NOT its option letter)</b></p><p>step-by-step conceptual justification</p>. Do NOT reference option letters (A/B/C/D), the word "option" / "विकल्प", or phrases like "Correct Answer: (X)" / "सही उत्तर: (X)" anywhere in the explanation.`);
+        if (wantSteps) lines.push(aiStepsInstruction(pName));
+        const detailInstr2 = aiDetailInstruction(detailLevel, pName);
+        if (detailInstr2) lines.push(detailInstr2);
+    }
+
+    if (q.bilingual && q.hi) {
+        lines.push('');
+        lines.push('THIS IS A BILINGUAL (English + Hindi) QUESTION. Hindi version:');
+        lines.push('QUESTION (HINDI): ' + (aiHtmlToPlain(q.hi.question) || '(empty)'));
+        q.hi.options.forEach((o, i) => lines.push(`(${L(i)}) [HI] ${aiHtmlToPlain(o) || '(empty)'}`));
+        if ((q.hi.explanation || '').trim()) {
+            lines.push('PRE-EXISTING HINDI EXPLANATION (raw HTML). "explanation_html_hi" MUST be written entirely in HINDI and MUST replicate THIS Hindi sample\'s exact HTML format (its tags, structure, styles, conventions — not the English sample\'s). The same NO OPTION REFERENCES rule applies: no option letters (A/B/C/D), no \u0935\u093f\u0915\u0932\u094d\u092a/"option" mentions, no "\u0938\u0939\u0940 \u0909\u0924\u094d\u0924\u0930: (X)"-style lines — state and justify the actual answer substance in Hindi instead:');
+            lines.push('-----BEGIN HINDI EXPLANATION HTML-----');
+            lines.push(q.hi.explanation);
+            lines.push('-----END HINDI EXPLANATION HTML-----');
+            if (wantSteps) lines.push(aiStepsInstruction('HINDI'));
+            { const d = aiDetailInstruction(detailLevel, 'HINDI'); if (d) lines.push('For "explanation_html_hi": ' + d); }
+        } else {
+            lines.push('PRE-EXISTING HINDI EXPLANATION: (none). Produce "explanation_html_hi" written entirely in Hindi, using the same HTML structure as your English explanation, with the same NO OPTION REFERENCES rule (no option letters, no विकल्प/"option" mentions).');
+            if (wantSteps) lines.push(aiStepsInstruction('HINDI'));
+            { const d = aiDetailInstruction(detailLevel, 'HINDI'); if (d) lines.push('For "explanation_html_hi": ' + d); }
+        }
+    }
+
+    lines.push('');
+    lines.push('TASK:');
+    lines.push('1. Solve the question yourself from first principles BEFORE looking at the marked answer.');
+    lines.push('2. Decide the truly correct option (0-based index). If a [FIGURE] is essential and missing, reason from the text as best you can and lower your confidence.');
+    lines.push('3. Compare your answer with the currently marked option.');
+    lines.push(q.bilingual
+        ? '4. Write the new explanation(s) per the FORMAT RULE and NO OPTION REFERENCES rules above — English explanation in English, Hindi explanation in Hindi, each matching its own pre-existing sample\'s format, and neither mentioning option letters/labels. (Option letters MAY still appear in "reasoning" and "user_suggestion_verdict" — the restriction applies only to the explanation HTML fields.)'
+        : `4. Write the new explanation per the FORMAT RULE and NO OPTION REFERENCES rules above — entirely in ${pName}, matching the pre-existing sample's format, with no option letters/labels mentioned. (Option letters MAY still appear in "reasoning" and "user_suggestion_verdict" — the restriction applies only to the explanation HTML field.)`);
+    lines.push('');
+    lines.push('Respond with ONLY a single JSON object (no markdown fences, no commentary):');
+    lines.push('{');
+    lines.push('  "correct_index": <0-based integer>,');
+    lines.push('  "is_marked_correct": <true|false>,');
+    lines.push('  "confidence": "high" | "medium" | "low",');
+    lines.push(`  "reasoning": "<2-5 sentence plain-text summary, written in ${q.bilingual ? 'ENGLISH' : pName}, of how you solved it and, if the marked answer is wrong, why>",`);
+    if (suggestIdx !== null && suggestIdx !== undefined)
+        lines.push('  "user_suggestion_verdict": "<verdict on the user\'s suggested option>",');
+    lines.push(`  "explanation_html": "<new explanation in ${pName} as an HTML string>"` + (q.bilingual ? ',' : ''));
+    if (q.bilingual)
+        lines.push('  "explanation_html_hi": "<new Hindi explanation as an HTML string>"');
+    lines.push('}');
+
+    return lines.join('\n');
+}
+
+// ---------- analyze ----------
+async function qeAiAnalyze() {
+    if (qeAiBusy) return;
+    const errBox = document.getElementById('qe-ai-error');
+    const resultBox = document.getElementById('qe-ai-result');
+    if (errBox) { errBox.classList.add('hidden'); errBox.textContent = ''; }
+
+    if (!aiConfigured()) {
+        if (errBox) {
+            errBox.textContent = 'Gemini API is not configured. Close this modal and open "AI Question Update (Gemini API)" settings in the Question Editor tab.';
+            errBox.classList.remove('hidden');
+        }
+        return;
+    }
+
+    const q = qeAiCollect();
+    if (!q.options.length) {
+        if (errBox) { errBox.textContent = 'This question has no options to analyze.'; errBox.classList.remove('hidden'); }
+        return;
+    }
+
+    const sel = document.getElementById('qe-ai-suggest');
+    const suggestIdx = (sel && sel.value !== '') ? parseInt(sel.value) : null;
+    const wantSteps = !!(document.getElementById('qe-ai-steps') || {}).checked;
+    const detailLevel = (document.getElementById('qe-ai-detail') || {}).value || 'detailed';
+
+    qeAiSetBusy(true);
+    if (resultBox) resultBox.classList.add('hidden');
+
+    try {
+        const raw = await aiGeminiRequest(qeAiBuildPrompt(q, suggestIdx, wantSteps, detailLevel));
+        const parsed = aiParseJson(raw);
+
+        let ci = parseInt(parsed.correct_index);
+        if (isNaN(ci) || ci < 0 || ci >= q.options.length) {
+            throw new Error('AI returned an invalid correct option index.');
+        }
+        if (typeof parsed.explanation_html !== 'string' || !parsed.explanation_html.trim()) {
+            throw new Error('AI did not return an explanation.');
+        }
+
+        qeAiLast = {
+            correct_index: ci,
+            is_marked_correct: (ci === q.marked),
+            confidence: /^(high|medium|low)$/i.test(parsed.confidence || '') ? parsed.confidence.toLowerCase() : 'medium',
+            reasoning: String(parsed.reasoning || '').trim(),
+            suggestion_idx: suggestIdx,
+            user_suggestion_verdict: String(parsed.user_suggestion_verdict || '').trim(),
+            explanation_html: parsed.explanation_html,
+            explanation_html_hi: (q.bilingual && typeof parsed.explanation_html_hi === 'string') ? parsed.explanation_html_hi : null,
+            marked_at_analysis: q.marked,
+            bilingual: q.bilingual
+        };
+        qeAiRenderResult();
+    } catch (err) {
+        if (errBox) {
+            errBox.textContent = 'AI analysis failed: ' + aiFriendlyError(err);
+            errBox.classList.remove('hidden');
+        }
+    } finally {
+        qeAiSetBusy(false);
+    }
+}
+
+function qeAiEsc(s) {
+    return String(s || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+
+function qeAiRenderResult() {
+    const r = qeAiLast;
+    if (!r) return;
+    const L = i => OPTION_LETTERS[i] || String(i + 1);
+    const resultBox = document.getElementById('qe-ai-result');
+    const verdict = document.getElementById('qe-ai-verdict');
+    const sugBox = document.getElementById('qe-ai-suggest-verdict');
+    const reasoning = document.getElementById('qe-ai-reasoning');
+    const prev = document.getElementById('qe-ai-expl-preview');
+    const prevHiWrap = document.getElementById('qe-ai-expl-preview-hi-wrap');
+    const prevHi = document.getElementById('qe-ai-expl-preview-hi');
+
+    const confLabel = { high: 'High confidence', medium: 'Medium confidence', low: 'Low confidence' }[r.confidence] || 'Medium confidence';
+
+    if (verdict) {
+        if (r.is_marked_correct) {
+            verdict.className = 'rounded-xl px-4 py-3 text-sm font-semibold flex items-start gap-2.5 ok';
+            verdict.innerHTML =
+                `<span class="qe-ai-verdict-chip" style="background:#10b981">✓</span>
+                 <span>The marked option <b>(${L(r.marked_at_analysis)})</b> is <b>correct</b>. ${qeAiEsc(confLabel)}.<br>
+                 <span class="font-normal text-xs opacity-80">You can still apply the freshly drafted explanation below.</span></span>`;
+        } else {
+            verdict.className = 'rounded-xl px-4 py-3 text-sm font-semibold flex items-start gap-2.5 bad';
+            verdict.innerHTML =
+                `<span class="qe-ai-verdict-chip" style="background:#f59e0b">!</span>
+                 <span>The marked option <b>(${L(r.marked_at_analysis)})</b> appears to be <b>wrong</b>.
+                 AI determines the correct option is <b>(${L(r.correct_index)})</b>. ${qeAiEsc(confLabel)}.<br>
+                 <span class="font-normal text-xs opacity-80">Use "Apply Correct Option" to re-mark it — the new explanation below matches option (${L(r.correct_index)}).</span></span>`;
+        }
+    }
+
+    if (sugBox) {
+        if (r.suggestion_idx !== null && r.suggestion_idx !== undefined && r.user_suggestion_verdict) {
+            const userRight = r.suggestion_idx === r.correct_index;
+            sugBox.classList.remove('hidden');
+            sugBox.innerHTML = `<b>${userRight ? '✓' : '✗'} Your suggestion — option (${L(r.suggestion_idx)}):</b> ${qeAiEsc(r.user_suggestion_verdict)}`;
+        } else {
+            sugBox.classList.add('hidden');
+            sugBox.innerHTML = '';
+        }
+    }
+
+    if (reasoning) reasoning.textContent = r.reasoning || '—';
+
+    if (prev) {
+        prev.innerHTML = r.explanation_html;
+        try { if (typeof renderKatex === 'function') renderKatex(prev); } catch (e) {}
+    }
+    if (prevHiWrap && prevHi) {
+        if (r.explanation_html_hi) {
+            prevHiWrap.classList.remove('hidden');
+            prevHi.innerHTML = r.explanation_html_hi;
+            try { if (typeof renderKatex === 'function') renderKatex(prevHi); } catch (e) {}
+        } else {
+            prevHiWrap.classList.add('hidden');
+            prevHi.innerHTML = '';
+        }
+    }
+
+    if (resultBox) resultBox.classList.remove('hidden');
+    try { lucide.createIcons(); } catch (e) {}
+}
+
+// ---------- apply ----------
+function qeAiSetRadio(lang, idx) {
+    const radio = document.querySelector(`input[name="qe-correct-${lang}"][value="${idx}"]`);
+    if (radio && !radio.checked) {
+        radio.checked = true;
+        radio.dispatchEvent(new Event('change', { bubbles: true }));
+    }
+}
+
+function qeAiApply(mode) {
+    const r = qeAiLast;
+    if (!r) return;
+    const L = i => OPTION_LETTERS[i] || String(i + 1);
+    let didOption = false, didExpl = false;
+
+    if (mode === 'option' || mode === 'both') {
+        qeAiSetRadio('en', r.correct_index);
+        if (r.bilingual) qeAiSetRadio('hi', r.correct_index);
+        didOption = true;
+    }
+    if (mode === 'explanation' || mode === 'both') {
+        setReValue('en-explanation', r.explanation_html);
+        if (r.bilingual && r.explanation_html_hi) setReValue('hi-explanation', r.explanation_html_hi);
+        didExpl = true;
+    }
+
+    const parts = [];
+    if (didOption) parts.push(`correct option → (${L(r.correct_index)})`);
+    if (didExpl) parts.push('explanation updated');
+    showToast('AI Result Applied', parts.join(', ') + '. Click "Save Changes" to commit.', 'success');
+}
+
+// ---------- boot ----------
+(function () {
+    function initAi() { aiLoadCfg(); }
+    if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', initAi);
+    else initAi();
+    // Show/hide the custom model input (delegated — markup may be injected late).
+    document.addEventListener('change', function (e) {
+        if (e.target && e.target.id === 'ai-model') {
+            const customEl = document.getElementById('ai-model-custom');
+            if (customEl) customEl.classList.toggle('hidden', e.target.value !== 'custom');
+        }
+        if (e.target && e.target.id === 'qx-model') {
+            const customEl = document.getElementById('qx-model-custom');
+            if (customEl) customEl.classList.toggle('hidden', e.target.value !== 'custom');
+        }
+        if (e.target && e.target.id === 'qx-vision-model') {
+            const customEl = document.getElementById('qx-vision-model-custom');
+            if (customEl) customEl.classList.toggle('hidden', e.target.value !== 'custom');
+        }
+        if (e.target && e.target.id === 'qx-gemini-split') {
+            qxPools.gemini.split = !!e.target.checked;
+            qxPoolPersist();
+            const visRow = document.getElementById('qx-vision-row');
+            if (visRow) visRow.classList.toggle('hidden',
+                !(qxPools.provider === 'deepseek' || (qxPools.provider === 'gemini' && qxPools.gemini.split)));
+            qxPoolUpdateChip();
+        }
+    });
+    // The tool's markup is injected after this script runs on some pages;
+    // re-sync chips shortly after boot so the settings card reflects storage.
+    setTimeout(function () { try { aiLoadCfg(); } catch (e) {} }, 800);
+})();
+
+// ============================================================
+// ============ jsDelivr CDN CACHE PURGE ======================
+// ============================================================
+// jsDelivr caches GitHub files aggressively (up to 12h for branch
+// URLs). After committing a JSON to GitHub we force-purge the CDN
+// so the change is served IMMEDIATELY on the same URL. We purge
+// both URL forms that readers might use:
+//     https://cdn.jsdelivr.net/gh/{repo}@{branch}/{path}   (pinned)
+//     https://cdn.jsdelivr.net/gh/{repo}/{path}            (default branch)
+// The purge endpoint mirrors the CDN path:
+//     https://purge.jsdelivr.net/gh/{repo}@{branch}/{path}
+
+async function jsdelivrPurgeFile(repo, branch, path) {
+    const enc = encodeURI(path);
+    const targets = [
+        `https://purge.jsdelivr.net/gh/${repo}@${branch}/${enc}`,
+        `https://purge.jsdelivr.net/gh/${repo}/${enc}`,
+    ];
+    const results = await Promise.allSettled(targets.map(u =>
+        fetch(u, { method: 'GET', cache: 'no-store' }).then(r => {
+            if (!r.ok) throw new Error('HTTP ' + r.status);
+            return r.json().catch(() => ({}));
+        })
+    ));
+    const okCount = results.filter(r => r.status === 'fulfilled').length;
+    if (!okCount) {
+        const firstErr = results[0] && results[0].reason;
+        throw new Error('CDN purge failed — ' + ((firstErr && firstErr.message) || 'purge service unreachable') +
+            '. The commit is saved; the CDN will refresh on its own within ~12h, or retry "Purge CDN cache".');
+    }
+    return { purged: okCount, total: targets.length };
+}
+
+// Purge with button busy-state + toasts. Used by the manual buttons.
+async function ghPurgeCdnWithUi(file, btn, label) {
+    if (!file || !file.path) {
+        showToast('No GitHub file', 'Load a JSON from GitHub first.', 'error');
+        return;
+    }
+    let origHTML = null;
+    if (btn) {
+        origHTML = btn.innerHTML;
+        btn.disabled = true;
+        btn.innerHTML = '<i data-lucide="loader-2" class="w-3.5 h-3.5 animate-spin"></i> Purging…';
+        lucide.createIcons();
+    }
+    try {
+        await jsdelivrPurgeFile(file.repo, file.branch, file.path);
+        showToast('CDN Cache Purged', `${label || file.path} — jsDelivr will now serve the latest version immediately.`, 'success');
+    } catch (err) {
+        showToast('CDN Purge Failed', err.message || String(err), 'error');
+    } finally {
+        if (btn && origHTML !== null) {
+            btn.disabled = false;
+            btn.innerHTML = origHTML;
+            lucide.createIcons();
+        }
+    }
+}
+
+// Manual purge buttons (Editor tab + Figure Updater link rows).
+function editorPurgeCdn(btn) {
+    ghPurgeCdnWithUi(typeof editorGitHubFile !== 'undefined' ? editorGitHubFile : null, btn, 'Editor JSON');
+}
+function figPurgeCdn(btn) {
+    ghPurgeCdnWithUi((typeof figState !== 'undefined' && figState.githubFile) ? figState.githubFile : null, btn, 'Figures JSON');
+}
+
+// ============================================================
+// ===== IMAGE HOSTING SETTINGS DROPDOWN (Figure Updater) =====
+// ============================================================
+// Collapsible card + status chip for the GitHub+jsDelivr image
+// hosting config — same pattern as the AI (Gemini) settings card.
+
+function figToggleHosting() {
+    const body = document.getElementById('fig-host-body');
+    const chev = document.getElementById('fig-host-chevron');
+    if (!body) return;
+    const nowHidden = body.classList.toggle('hidden');
+    if (chev) chev.style.transform = nowHidden ? '' : 'rotate(180deg)';
+    try { lucide.createIcons(); } catch (e) {}
+}
+
+function figHostingConfigured() {
+    const c = (typeof figState !== 'undefined' && figState.github) || {};
+    return !!(c.repo && c.token);
+}
+
+function figUpdateHostChip() {
+    const chip = document.getElementById('fig-host-status-chip');
+    if (!chip) return;
+    const ok = figHostingConfigured();
+    const c = (typeof figState !== 'undefined' && figState.github) || {};
+    chip.textContent = ok ? `Ready · ${c.repo}@${c.branch || 'main'}` : 'Not configured';
+    chip.classList.toggle('on', ok);
+    chip.classList.toggle('off', !ok);
+}
+
+(function bootFigHostChip() {
+    function init() { figUpdateHostChip(); }
+    if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', init);
+    else init();
+    // Config loads from localStorage during boot; re-sync shortly after.
+    setTimeout(function () { try { figUpdateHostChip(); } catch (e) {} }, 800);
+})();
+
+// ============================================================
+// ========= QUESTION FIGURE POSITION PICKER ==================
+// ============================================================
+// Lets the user place the question figure ANYWHERE between the
+// question's lines (like exam papers where the diagram sits
+// mid-question) instead of always at the end. Shown whenever the
+// question slot holds an image; the live preview follows instantly.
+
+function figRenderQPosPicker() {
+    const panel = document.getElementById('fig-qpos-panel');
+    const box = document.getElementById('fig-qpos-options');
+    if (!panel || !box) return;
+
+    const qSlot = figState.slots && figState.slots.q;
+    const show = !!(qSlot && figSlotHasImage(qSlot) && figState.selectedIdx !== null && figState.data);
+    panel.classList.toggle('hidden', !show);
+    if (!show) { box.innerHTML = ''; return; }
+
+    if (qSlot.pos === undefined) qSlot.pos = 'auto';
+
+    const post = figState.data.posts[figState.selectedIdx];
+    const clean = figCleanQText(post.post_content || post.post_title || '');
+    const segs = figSplitQSegments(clean);
+    const cur = String(qSlot.pos);
+
+    const item = (val, label, sub) => {
+        const active = cur === String(val);
+        return `<label class="fig-qpos-item ${active ? 'active' : ''}">
+            <input type="radio" name="fig-qpos" value="${val}" ${active ? 'checked' : ''}>
+            <span class="fig-qpos-lbl">${label}</span>
+            ${sub ? `<span class="fig-qpos-seg">${sub}</span>` : ''}
+        </label>`;
+    };
+
+    let html = item('auto', 'Auto', 'replace [image here] placeholder / existing figure — else at the end');
+    html += item('start', 'At the very start', '');
+    segs.forEach((s, i) => {
+        const t = stripHtmlTags(s).replace(/\s+/g, ' ').trim();
+        html += item(i, `After line ${i + 1}`, escapeAttr(t.slice(0, 80)) + (t.length > 80 ? '…' : ''));
+    });
+    html += item('end', 'At the very end', '');
+    box.innerHTML = html;
+
+    box.querySelectorAll('input[name="fig-qpos"]').forEach(r => {
+        r.addEventListener('change', () => {
+            const v = r.value;
+            qSlot.pos = (v === 'auto' || v === 'start' || v === 'end') ? v : parseInt(v, 10);
+            box.querySelectorAll('.fig-qpos-item').forEach(l =>
+                l.classList.toggle('active', l.querySelector('input').checked));
+            figRenderPreview();
+        });
+    });
+}
+
+// Re-render the picker whenever the slots re-render (question selected,
+// figure cropped/cleared/applied) — wrap the existing renderer.
+(function hookQPosIntoSlots() {
+    if (typeof figRenderSlots !== 'function') return;
+    const orig = figRenderSlots;
+    figRenderSlots = function () {
+        orig.apply(this, arguments);
+        try { figRenderQPosPicker(); } catch (e) {}
+    };
+})();
+
+// ============================================================
+// ============ QUESTION EXTRACTOR (AI, Gemini) ===============
+// ============================================================
+// Crop individual questions from an exam PDF/image (Google-Lens
+// style), send the crop to Gemini for transcription into question
+// + options + correct answer + explanation, review/edit, and save
+// into a persistent IndexedDB question bank. The bank survives
+// refresh and browser close; records are removed only via the
+// Delete buttons. Export produces the standard question JSON.
+
+const qxState = {
+    pdfDoc: null, srcType: '', pageNum: 1,
+    scale: 1, fitDispW: 0, fitDispH: 0,
+    rendering: false, pendingPage: null,
+    cropper: null,
+    result: null,          // current AI extraction under review
+    cropThumb: '',         // small dataURL of the crop (stored with record)
+    crops: [],             // queued crops for a multi-part question: [{b64, thumb}]
+    busy: false,
+};
+
+// ---------- IndexedDB question bank ----------
+const QX_DB_NAME = 'aimcq_question_bank';
+const QX_DB_VER = 2;
+const QX_STORE = 'questions';
+const QX_LIB_STORE = 'libraries';
+const QX_LIB_DEFAULT = 'general';
+const QX_LIB_SEL_KEY = 'aimcq_qx_lib_selection';   // { save, view }
+
+function qxOpenDb() {
+    return new Promise((resolve, reject) => {
+        const req = indexedDB.open(QX_DB_NAME, QX_DB_VER);
+        req.onupgradeneeded = e => {
+            const db = e.target.result;
+            if (!db.objectStoreNames.contains(QX_STORE)) {
+                db.createObjectStore(QX_STORE, { keyPath: 'id' });
+            }
+            if (!db.objectStoreNames.contains(QX_LIB_STORE)) {
+                db.createObjectStore(QX_LIB_STORE, { keyPath: 'id' });
+            }
+        };
+        req.onsuccess = e => resolve(e.target.result);
+        req.onerror = () => reject(req.error || new Error('IndexedDB open failed'));
+    });
+}
+
+function qxDbOp(mode, fn) {
+    return qxOpenDb().then(db => new Promise((resolve, reject) => {
+        const tx = db.transaction(QX_STORE, mode);
+        const store = tx.objectStore(QX_STORE);
+        const out = fn(store);
+        tx.oncomplete = () => { db.close(); resolve(out && out.__result !== undefined ? out.__result : undefined); };
+        tx.onerror = () => { db.close(); reject(tx.error || new Error('IndexedDB transaction failed')); };
+    }));
+}
+
+function qxDbPut(rec) { return qxDbOp('readwrite', s => { s.put(rec); }); }
+function qxDbDelete(id) { return qxDbOp('readwrite', s => { s.delete(id); }); }
+function qxDbClear() { return qxDbOp('readwrite', s => { s.clear(); }); }
+function qxDbAll() {
+    return qxOpenDb().then(db => new Promise((resolve, reject) => {
+        const tx = db.transaction(QX_STORE, 'readonly');
+        const req = tx.objectStore(QX_STORE).getAll();
+        req.onsuccess = () => { db.close(); resolve(req.result || []); };
+        req.onerror = () => { db.close(); reject(req.error); };
+    }));
+}
+
+// ---------- subject libraries ----------
+function qxLibAll() {
+    return qxOpenDb().then(db => new Promise((resolve, reject) => {
+        const tx = db.transaction(QX_LIB_STORE, 'readonly');
+        const req = tx.objectStore(QX_LIB_STORE).getAll();
+        req.onsuccess = () => { db.close(); resolve(req.result || []); };
+        req.onerror = () => { db.close(); reject(req.error); };
+    }));
+}
+function qxLibOp(fn) {
+    return qxOpenDb().then(db => new Promise((resolve, reject) => {
+        const tx = db.transaction(QX_LIB_STORE, 'readwrite');
+        fn(tx.objectStore(QX_LIB_STORE));
+        tx.oncomplete = () => { db.close(); resolve(); };
+        tx.onerror = () => { db.close(); reject(tx.error); };
+    }));
+}
+// Ensure the default "General" library exists; returns the full list.
+async function qxLibEnsure() {
+    let libs = [];
+    try { libs = await qxLibAll(); } catch (e) {}
+    if (!libs.some(l => l.id === QX_LIB_DEFAULT)) {
+        const gen = { id: QX_LIB_DEFAULT, name: 'General', created: new Date().toISOString() };
+        try { await qxLibOp(st => st.put(gen)); libs.push(gen); } catch (e) {}
+    }
+    libs.sort((a, b) => a.id === QX_LIB_DEFAULT ? -1 : b.id === QX_LIB_DEFAULT ? 1 : String(a.name).localeCompare(String(b.name)));
+    return libs;
+}
+function qxLibSelection() {
+    try {
+        const raw = localStorage.getItem(QX_LIB_SEL_KEY);
+        if (raw) { const p = JSON.parse(raw); return { save: p.save || QX_LIB_DEFAULT, view: p.view || 'all' }; }
+    } catch (e) {}
+    return { save: QX_LIB_DEFAULT, view: 'all' };
+}
+function qxLibSaveSelection(sel) {
+    try { localStorage.setItem(QX_LIB_SEL_KEY, JSON.stringify(sel)); } catch (e) {}
+}
+async function qxLibCreate() {
+    const name = (window.prompt('New library name (subject), e.g. Physics, History, Maths:') || '').trim();
+    if (!name) return;
+    const libs = await qxLibEnsure();
+    if (libs.some(l => l.name.toLowerCase() === name.toLowerCase())) {
+        showToast('Library exists', `A library named "${name}" already exists.`, 'error');
+        return;
+    }
+    const id = 'lib-' + Date.now();
+    try { await qxLibOp(st => st.put({ id, name, created: new Date().toISOString() })); } catch (e) {
+        showToast('Create failed', 'IndexedDB error: ' + (e.message || e), 'error'); return;
+    }
+    const sel = qxLibSelection();
+    sel.save = id;                       // new questions go to the new library
+    sel.view = id;                       // and show it right away
+    qxLibSaveSelection(sel);
+    await qxRenderBank();
+    showToast('Library created', `"${name}" — new questions will now be saved there.`, 'success');
+}
+async function qxLibDeleteCurrent() {
+    const sel = qxLibSelection();
+    if (sel.view === 'all' || sel.view === QX_LIB_DEFAULT) return;
+    const libs = await qxLibEnsure();
+    const lib = libs.find(l => l.id === sel.view);
+    if (!lib) return;
+    let recs = [];
+    try { recs = await qxDbAll(); } catch (e) {}
+    const inLib = recs.filter(r => (r.library || QX_LIB_DEFAULT) === lib.id);
+    if (!window.confirm(`Delete library "${lib.name}" and its ${inLib.length} question${inLib.length === 1 ? '' : 's'}? This cannot be undone.`)) return;
+    try {
+        await qxDbOp('readwrite', st => { inLib.forEach(r => st.delete(r.id)); });
+        await qxLibOp(st => st.delete(lib.id));
+    } catch (e) {}
+    if (sel.save === lib.id) sel.save = QX_LIB_DEFAULT;
+    sel.view = 'all';
+    qxLibSaveSelection(sel);
+    await qxRenderBank();
+    showToast('Library deleted', `"${lib.name}" and its questions were removed.`, 'info');
+}
+
+// ---------- viewer (mirrors the Figure Updater's canvas) ----------
+function qxHasSource() { return !!(qxState.pdfDoc || qxState.srcType === 'image'); }
+
+function qxApplyZoom() {
+    const canvas = document.getElementById('qx-canvas');
+    if (!canvas || !qxHasSource()) return;
+    const dispW = Math.max(1, Math.round(qxState.fitDispW * qxState.scale));
+    const dispH = Math.max(1, Math.round(qxState.fitDispH * qxState.scale));
+    canvas.style.width = dispW + 'px';
+    canvas.style.height = dispH + 'px';
+    const zv = document.getElementById('qx-zoom-val');
+    if (zv) zv.value = Math.round(qxState.scale * 100) + '%';
+    if (qxState.cropper) {
+        const data = qxState.cropper.getData();
+        qxEnableCropper(data);
+    }
+}
+
+function qxEnableCropper(keepData) {
+    const canvas = document.getElementById('qx-canvas');
+    if (!canvas || typeof Cropper === 'undefined') return;
+    if (qxState.cropper) { qxState.cropper.destroy(); qxState.cropper = null; }
+    qxState.cropper = new Cropper(canvas, {
+        viewMode: 1, dragMode: 'crop', autoCrop: false,
+        movable: false, zoomable: false, rotatable: false, scalable: false,
+        background: false, checkCrossOrigin: false,
+        ready() { if (keepData) { try { qxState.cropper.setData(keepData); } catch (e) {} } },
+    });
+}
+
+function qxRenderPdfPage(num) {
+    if (!qxState.pdfDoc) return;
+    if (qxState.continuous) { qxRenderPdfContinuous(num); return; }
+    qxState.srcType = 'pdf';
+    qxState.rendering = true;
+    const canvas = document.getElementById('qx-canvas');
+    const ctx = canvas.getContext('2d');
+    qxState.pdfDoc.getPage(num).then(page => {
+        const scroll = document.getElementById('qx-pdf-scroll');
+        const containerWidth = Math.max(scroll.clientWidth - 4, 200);
+        const unscaled = page.getViewport({ scale: 1 });
+        const fitScale = containerWidth / unscaled.width;
+        const RASTER = 2.5;
+        const vp = page.getViewport({ scale: fitScale * RASTER });
+        canvas.width = vp.width;
+        canvas.height = vp.height;
+        qxState.fitDispW = canvas.width / RASTER;
+        qxState.fitDispH = canvas.height / RASTER;
+        if (qxState.cropper) { qxState.cropper.destroy(); qxState.cropper = null; }
+        page.render({ canvasContext: ctx, viewport: vp }).promise.then(() => {
+            qxState.rendering = false;
+            qxApplyZoom();
+            qxEnableCropper();      // crop mode is always ON in the extractor
+            if (qxState.pendingPage !== null) {
+                const p = qxState.pendingPage;
+                qxState.pendingPage = null;
+                qxRenderPdfPage(p);
+            }
+        });
+    });
+    const cp = document.getElementById('qx-cur-page');
+    if (cp) cp.textContent = num;
+}
+
+// Continuous mode: render page `startNum` and the following pages stacked
+// vertically onto ONE tall canvas, so a single crop selection can span a
+// page break. A thin dashed separator marks each page boundary. The number
+// of pages stacked is qxState.contSpan (default 2 — current + next).
+function qxRenderPdfContinuous(startNum) {
+    if (!qxState.pdfDoc) return;
+    qxState.srcType = 'pdf';
+    qxState.rendering = true;
+    const canvas = document.getElementById('qx-canvas');
+    const ctx = canvas.getContext('2d');
+    const scroll = document.getElementById('qx-pdf-scroll');
+    const containerWidth = Math.max(scroll.clientWidth - 4, 200);
+    const RASTER = 2.5;
+    const total = qxState.pdfDoc.numPages;
+    const span = Math.max(1, qxState.contSpan || 2);
+    const last = Math.min(total, startNum + span - 1);
+    const nums = [];
+    for (let n = startNum; n <= last; n++) nums.push(n);
+
+    Promise.all(nums.map(n => qxState.pdfDoc.getPage(n))).then(pages => {
+        // Uniform fit-scale from the widest page so columns line up.
+        let maxUnscaledW = 0;
+        pages.forEach(pg => { maxUnscaledW = Math.max(maxUnscaledW, pg.getViewport({ scale: 1 }).width); });
+        const fitScale = containerWidth / maxUnscaledW;
+        const vps = pages.map(pg => pg.getViewport({ scale: fitScale * RASTER }));
+        const gap = Math.round(14 * RASTER);   // visual gap between pages
+        const totalW = Math.max.apply(null, vps.map(v => v.width));
+        const totalH = vps.reduce((s, v) => s + v.height, 0) + gap * (vps.length - 1);
+        canvas.width = totalW;
+        canvas.height = totalH;
+        qxState.fitDispW = totalW / RASTER;
+        qxState.fitDispH = totalH / RASTER;
+        if (qxState.cropper) { qxState.cropper.destroy(); qxState.cropper = null; }
+        ctx.fillStyle = '#ffffff';
+        ctx.fillRect(0, 0, totalW, totalH);
+
+        // Render each page sequentially at its vertical offset.
+        let y = 0;
+        const renderNext = (i) => {
+            if (i >= pages.length) {
+                qxState.rendering = false;
+                qxApplyZoom();
+                qxEnableCropper();
+                if (qxState.pendingPage !== null) {
+                    const p = qxState.pendingPage;
+                    qxState.pendingPage = null;
+                    qxRenderPdfPage(p);
+                }
+                return;
+            }
+            const vp = vps[i];
+            ctx.save();
+            ctx.translate(0, y);
+            pages[i].render({ canvasContext: ctx, viewport: vp }).promise.then(() => {
+                ctx.restore();
+                // dashed page-boundary separator (except after the last page)
+                if (i < pages.length - 1) {
+                    const sepY = y + vp.height + gap / 2;
+                    ctx.save();
+                    ctx.strokeStyle = '#cbd5e1';
+                    ctx.lineWidth = 2;
+                    ctx.setLineDash([10, 8]);
+                    ctx.beginPath(); ctx.moveTo(0, sepY); ctx.lineTo(totalW, sepY); ctx.stroke();
+                    ctx.restore();
+                }
+                y += vp.height + gap;
+                renderNext(i + 1);
+            });
+        };
+        renderNext(0);
+    });
+
+    const cp = document.getElementById('qx-cur-page');
+    if (cp) cp.textContent = last > startNum ? (startNum + '\u2013' + last) : String(startNum);
+}
+
+function qxRenderImage(file) {
+    const canvas = document.getElementById('qx-canvas');
+    if (!canvas) return;
+    const url = URL.createObjectURL(file);
+    const img = new Image();
+    img.onload = function () {
+        const natW = img.naturalWidth || 1, natH = img.naturalHeight || 1;
+        canvas.width = natW; canvas.height = natH;
+        const ctx = canvas.getContext('2d');
+        ctx.clearRect(0, 0, natW, natH);
+        ctx.drawImage(img, 0, 0, natW, natH);
+        URL.revokeObjectURL(url);
+        const scroll = document.getElementById('qx-pdf-scroll');
+        const containerWidth = Math.max(scroll.clientWidth - 4, 200);
+        qxState.fitDispW = Math.min(natW, containerWidth);
+        qxState.fitDispH = qxState.fitDispW * (natH / natW);
+        qxState.srcType = 'image';
+        qxState.pdfDoc = null;
+        qxState.pageNum = 1;
+        if (qxState.cropper) { qxState.cropper.destroy(); qxState.cropper = null; }
+        qxApplyZoom();
+        qxEnableCropper();
+        document.getElementById('qx-cur-page').textContent = '1';
+        document.getElementById('qx-total-pages').textContent = '1';
+        qxUpdateNav();
+    };
+    img.onerror = function () {
+        URL.revokeObjectURL(url);
+        showToast('Image error', 'Could not load that image file.', 'error');
+    };
+    img.src = url;
+}
+
+function qxUpdateNav() {
+    const isImg = qxState.srcType === 'image';
+    const prev = document.getElementById('qx-prev-page');
+    const next = document.getElementById('qx-next-page');
+    if (prev) prev.disabled = isImg;
+    if (next) next.disabled = isImg;
+}
+
+function qxShowWorkspace() {
+    document.getElementById('qx-workspace').classList.remove('hidden');
+    document.getElementById('qx-source-pick').classList.add('hidden');
+}
+
+function qxLoadPdfFile(file) {
+    if (typeof pdfjsLib === 'undefined') {
+        showToast('PDF engine missing', 'pdf.js failed to load — refresh and try again.', 'error');
+        return;
+    }
+    const reader = new FileReader();
+    reader.onload = e => {
+        const docParams = { data: new Uint8Array(e.target.result) };
+        if (window.pdfjsWorkerDisabled) docParams.disableWorker = true;
+        pdfjsLib.getDocument(docParams).promise.then(doc => {
+            qxState.pdfDoc = doc;
+            qxState.pageNum = 1;
+            qxState.scale = 1;
+            document.getElementById('qx-total-pages').textContent = doc.numPages;
+            qxShowWorkspace();
+            qxUpdateNav();
+            qxRenderPdfPage(1);
+        }).catch(err => showToast('PDF error', err.message || String(err), 'error'));
+    };
+    reader.readAsArrayBuffer(file);
+}
+
+function qxGetCropCanvas(opts) {
+    opts = opts || {};
+    if (!qxState.cropper) {
+        if (!opts.silent) showToast('No cropper', 'Load a PDF or image first.', 'error');
+        return null;
+    }
+    const data = qxState.cropper.getData(true);
+    if (!data || data.width < 2 || data.height < 2) {
+        if (!opts.silent) showToast('No selection', 'Drag a box around one complete question first.', 'error');
+        return null;
+    }
+    const out = qxState.cropper.getCroppedCanvas({
+        width: Math.round(data.width), height: Math.round(data.height),
+        imageSmoothingEnabled: true, imageSmoothingQuality: 'high',
+    });
+    if (!out || !out.width || !out.height) {
+        showToast('Invalid crop', 'The crop area is empty.', 'error');
+        return null;
+    }
+    return out;
+}
+
+// ---------- multi-crop queue ----------
+// A single question sometimes spans more than one crop: it continues on the
+// next page, or the same question is printed again in another language further
+// down. "Add crop" banks the current selection (letting the user turn the page
+// and select more) and "Extract" then sends every banked crop plus the current
+// selection to the AI as ONE question.
+function qxAddCrop() {
+    const crop = qxGetCropCanvas();
+    if (!crop) return;
+    const b64 = qxScaleCanvas(crop, 1600).toDataURL('image/webp', 0.92).split(',')[1];
+    const thumb = qxScaleCanvas(crop, 300).toDataURL('image/jpeg', 0.7);
+    qxState.crops.push({ b64, thumb });
+    qxRenderCropQueue();
+    showToast('Crop added', `${qxState.crops.length} crop${qxState.crops.length > 1 ? 's' : ''} queued. Turn the page / select more, then Extract to combine them into one question.`, 'success');
+}
+
+function qxRemoveCrop(idx) {
+    if (idx < 0 || idx >= qxState.crops.length) return;
+    qxState.crops.splice(idx, 1);
+    qxRenderCropQueue();
+}
+
+function qxClearCrops() {
+    if (!qxState.crops.length) return;
+    qxState.crops = [];
+    qxRenderCropQueue();
+}
+
+function qxRenderCropQueue() {
+    const wrap = document.getElementById('qx-crop-queue');
+    if (!wrap) return;
+    const n = qxState.crops.length;
+    if (!n) { wrap.classList.add('hidden'); wrap.innerHTML = ''; return; }
+    wrap.classList.remove('hidden');
+    let items = '';
+    qxState.crops.forEach((c, i) => {
+        items += `
+        <div class="qx-crop-queue-item" title="Crop ${i + 1}">
+            <span class="qx-crop-queue-num">${i + 1}</span>
+            <img src="${c.thumb || ''}" alt="crop ${i + 1}">
+            <button type="button" class="qx-crop-queue-del" data-idx="${i}" title="Remove this crop"><i data-lucide="x" class="w-3 h-3"></i></button>
+        </div>`;
+    });
+    wrap.innerHTML = `
+        <div class="qx-crop-queue-head">
+            <span><i data-lucide="layers" class="w-3.5 h-3.5 inline-block -mt-0.5 mr-1"></i>${n} crop${n > 1 ? 's' : ''} queued for one question</span>
+            <button type="button" id="qx-crop-clear" class="qx-crop-queue-clear">Clear all</button>
+        </div>
+        <div class="qx-crop-queue-strip">${items}</div>
+        <p class="qx-crop-queue-hint">These will be combined into a single question when you click Extract (the current on-screen selection, if any, is added last).</p>`;
+    wrap.querySelectorAll('.qx-crop-queue-del').forEach(b =>
+        b.addEventListener('click', () => qxRemoveCrop(parseInt(b.getAttribute('data-idx'), 10))));
+    const clr = document.getElementById('qx-crop-clear');
+    if (clr) clr.addEventListener('click', qxClearCrops);
+    if (window.lucide && lucide.createIcons) { try { lucide.createIcons(); } catch (e) {} }
+}
+
+// Downscale a canvas so its longest side <= max (API payload size control).
+function qxScaleCanvas(src, max) {
+    const ratio = Math.min(1, max / Math.max(src.width, src.height));
+    if (ratio >= 1) return src;
+    const c = document.createElement('canvas');
+    c.width = Math.max(1, Math.round(src.width * ratio));
+    c.height = Math.max(1, Math.round(src.height * ratio));
+    const ctx = c.getContext('2d');
+    ctx.imageSmoothingEnabled = true;
+    ctx.imageSmoothingQuality = 'high';
+    ctx.drawImage(src, 0, 0, c.width, c.height);
+    return c;
+}
+
+// ---------- extraction ----------
+// Safety net: strip a leading QUESTION-NUMBER prefix that the cropped image
+// carried into the stem (e.g. "20.", "Q7)", "Q. 15", "(20)", "प्रश्न 12.").
+// The prompt already instructs the model to omit it, but it occasionally
+// leaks; this removes only a number prefix at the very start of the field.
+// It is deliberately conservative so it never touches legitimate content:
+//   - years / long numbers (4+ digits) are left alone;
+//   - decimals like "3.14" are left alone (no separator+space follows);
+//   - a leading percentage/measurement like "20% of ..." is left alone
+//     (no "." / ")" separator right after the number);
+//   - only a single prefix at the absolute start (after any opening tag)
+//     is removed, so an internal "1./2." statement list is never affected.
+function qxStripLeadingQNumber(html) {
+    if (!html) return html;
+    // Skip any leading opening block/inline tags, then match an optional
+    // question word (Q / Que / Ques / Question / प्र / प्रश्न), then the
+    // number as either "(n)" or "n." / "n)", then required trailing space.
+    const re = /^(\s*(?:<(?:p|div|span|b|i|strong|em)\b[^>]*>\s*)*)(?:(?:Q(?:ues?|uestion)?|प्र(?:श्न)?)\.?\s*(?:\(\s*\d{1,3}\s*\)|\d{1,3})\s*[.):]?(?:&nbsp;|\s)+|(?:\(\s*\d{1,3}\s*\)|\d{1,3}\s*[.):])(?:&nbsp;|\s)+)/i;
+    const stripped = html.replace(re, '$1');
+    // Guard: never blank out the field — if nothing meaningful remains,
+    // the match was probably the whole (short) content, so keep the original.
+    if (stripped.replace(/<[^>]+>/g, '').replace(/&nbsp;/g, ' ').trim().length === 0)
+        return html;
+    return stripped;
+}
+
+// Safety net: strip answer-marking artifacts (stray tick/cross/marks) and
+// any leaked answer-option text from a question field. The prompt already
+// instructs the model to omit these; this cleans up the occasional leak
+// without touching legitimate content (tables, figures, statements).
+function qxStripArtifacts(html, options) {
+    if (!html) return html;
+    let out = qxStripLeadingQNumber(html);
+    // 1) Remove stray standalone tick/cross/checkbox artifact glyphs that are
+    //    not part of normal prose. Only remove when isolated (surrounded by
+    //    whitespace/tags/limits), so we never touch a legit × in "2 × 10^3".
+    out = out.replace(/(^|[\s>(\[])[\u2713\u2714\u2717\u2718\u2611\u2612\u274c\u2716](?=$|[\s<)\].,])/g, '$1');
+    // 2) If the model appended the full option list to the end of the stem as
+    //    loose lines, drop a trailing run that exactly matches the options.
+    if (Array.isArray(options) && options.length >= 2) {
+        const norm = t => String(t).replace(/<[^>]+>/g, '').replace(/\s+/g, ' ').trim().toLowerCase();
+        const optSet = options.map(norm).filter(Boolean);
+        // split trailing <br>/<p> segments and remove ones equal to an option
+        const parts = out.split(/(?:<br\s*\/?>|<\/p>\s*<p>)/i);
+        while (parts.length > 1) {
+            const tail = norm(parts[parts.length - 1]);
+            if (tail && optSet.includes(tail)) { parts.pop(); }
+            else break;
+        }
+        out = parts.join('<br>');
+    }
+    return out.replace(/(?:\s*<br\s*\/?>\s*)+$/i, '').trim();
+}
+
+// "Hindi explanation" mode: the question and its options are transcribed and
+// kept in the source language (e.g. English) exactly as printed, but the
+// EXPLANATION is written in Hindi and stored in the PRIMARY _aimcq_explanation
+// field (matching bank exports where an English question carries a Hindi
+// explanation and _aimcq_explanation_hi is left empty).
+function qxHindiExplInstruction(detailLevel) {
+    const L = [];
+    L.push('EXPLANATION LANGUAGE = HINDI (critical, overrides the output language for the explanation ONLY): transcribe the question text and ALL options in their own printed language exactly as instructed above — do NOT translate them — but write "explanation_html" entirely in HINDI (Devanagari). Rules: '
+        + '(a) the question and options stay in the source language; ONLY the explanation is Hindi; '
+        + '(b) technical/subject terms, proper nouns, and the option wording being justified may appear in their original script inside the Hindi text where that is how they are normally written (e.g. <b>\'Sarcastic\'</b>, Idiom <b>\'Make no bones about it\'</b>) — but the explanatory prose itself must be Hindi; '
+        + '(c) keep the same clean HTML structure, step numbering and LaTeX $...$ delimiters as normal; '
+        + '(d) the NO OPTION REFERENCES rule still applies — no A/B/C/D labels, no "\u0935\u093f\u0915\u0932\u094d\u092a"/"option" mentions, no "\u0938\u0939\u0940 \u0909\u0924\u094d\u0924\u0930: (X)" lines; state and justify the actual answer substance; '
+        + '(e) do NOT also produce an English explanation, and leave "explanation_html_hi" out entirely — the Hindi explanation belongs in "explanation_html".');
+    // English-language / grammar / comprehension questions: the metalanguage
+    // (grammar terminology) must stay in ENGLISH inside the Hindi prose, the
+    // way Hindi-medium English coaching material is actually written —
+    // "Direct Speech", "Passive Voice", "Synonym", "Noun Clause", etc.
+    L.push('KEEP ENGLISH GRAMMAR TERMINOLOGY IN ENGLISH (critical for English / English Grammar / English Comprehension / vocabulary questions): when the question is about the English language itself, every English grammatical, literary and linguistic TERM must be written in ENGLISH (Latin script) inside the Hindi explanation \u2014 never translated into Hindi and never transliterated into Devanagari. '
+        + 'This covers, non-exhaustively: Synonym, Antonym, Homonym, Homophone, Idiom, Phrase, Phrasal Verb, Proverb, Collocation, One Word Substitution, Spelling; '
+        + 'Direct Speech, Indirect Speech, Reported Speech, Reporting Verb, Narration; Active Voice, Passive Voice; '
+        + 'Noun, Pronoun, Verb, Adverb, Adjective, Preposition, Conjunction, Article, Determiner, Interjection, Modal; '
+        + 'Subject, Object, Predicate, Complement, Clause, Main Clause, Subordinate Clause, Noun Clause, Adjective Clause, Adverb Clause, Phrase, Infinitive, Gerund, Participle; '
+        + 'Tense and every tense name (Simple Present, Present Continuous, Present Perfect, Simple Past, Past Perfect, Future Perfect, Future Continuous, etc.); '
+        + 'Singular, Plural, Countable, Uncountable, Degree of Comparison, Positive/Comparative/Superlative, Subject-Verb Agreement, Concord, Inversion, Conditional, Question Tag, Voice, Mood, Case, Gender, Number, Person (1st/2nd/3rd person); '
+        + 'Error Detection, Sentence Improvement, Cloze Test, Para Jumble, Fill in the Blanks, Comprehension, Passage, Prefix, Suffix, Root Word; '
+        + 'and verb-form shorthand such as V1, V2, V3, V-ing, s/es, has/have/had + V3. '
+        + 'Write them exactly like this: <p>\u092f\u0939\u093e\u0901 <b>\'Caustic\'</b> \u0936\u092c\u094d\u0926 \u0915\u093e <b>Synonym</b> (\u0938\u092e\u093e\u0928\u093e\u0930\u094d\u0925\u0940 \u0936\u092c\u094d\u0926) \u092c\u0924\u093e\u0928\u093e \u0939\u0948\u0964</p> and <p><b>Step 1:</b> Future Perfect \u0915\u093e <b>Passive Voice</b> \u092c\u0928\u093e\u0924\u0947 \u0938\u092e\u092f <b>\'will have + been + V3\'</b> \u0915\u093e \u092a\u094d\u0930\u092f\u094b\u0917 \u0915\u093f\u092f\u093e \u091c\u093e\u0924\u093e \u0939\u0948\u0964</p> \u2014 English term in English, surrounding explanation in Hindi. '
+        + 'You MAY add a short Hindi gloss in brackets the FIRST time a term appears (e.g. <b>Synonym</b> (\u0938\u092e\u093e\u0928\u093e\u0930\u094d\u0925\u0940 \u0936\u092c\u094d\u0926), <b>Antonym</b> (\u0935\u093f\u0932\u094b\u092e \u0936\u092c\u094d\u0926)), but the English term must always be present and must lead. '
+        + 'NEVER write a bare Hindi replacement such as \u0915\u0930\u094d\u092e\u0935\u093e\u091a\u094d\u092f for Passive Voice, \u092a\u094d\u0930\u0924\u094d\u092f\u0915\u094d\u0937 \u0915\u0925\u0928 for Direct Speech, \u0938\u0902\u091c\u094d\u091e\u093e for Noun, \u0915\u093e\u0932 for Tense, or \u0915\u0930\u094d\u0924\u093e for Subject, and never Devanagari transliterations such as \u0938\u093f\u0928\u094b\u0928\u093f\u092e / \u092a\u0948\u0938\u093f\u0935 \u0935\u0949\u092f\u0938\u0964');
+    L.push('QUOTED ENGLISH MATERIAL STAYS IN ENGLISH: any word, option, sentence, sentence-fragment or transformed answer sentence you quote from the question must be reproduced verbatim in English (normally inside <b>...</b> or <i>...</i>) \u2014 e.g. <b>\'The reagents will have been double-checked by the laboratory by dawn.\'</b>. Do NOT translate quoted English material into Hindi; the Hindi is only the connective explanatory prose around it. A short Hindi meaning may follow in brackets when the question is about a word\'s meaning.');
+    // Punctuation is load-bearing in English-grammar questions (quotation marks
+    // in Direct/Indirect Speech, the "?"/"!" that decides an interrogative or
+    // exclamatory sentence, apostrophes in possessives/contractions).
+    L.push('PRESERVE PUNCTUATION & SYMBOLS EXACTLY (critical): reproduce every punctuation mark and symbol of quoted English material EXACTLY as it appears \u2014 never drop, add, swap or \"normalise\" one. This includes: '
+        + 'double quotation marks (\" \" and the curly \u201c \u201d), single quotation marks / apostrophes (\' \' and the curly \u2018 \u2019 \u2014 including possessives like <i>boy\'s</i> and contractions like <i>didn\'t</i>, <i>don\'t</i>); '
+        + 'the exclamation mark (!), question mark (?), full stop (.), comma (,), semicolon (;), colon (:), hyphen (-), en/em dash (\u2013 \u2014), ellipsis (...), slash (/), backslash (\\\\), ampersand (&), asterisk (*), plus (+), equals (=), percent (%), brackets ( ) [ ] { }, and any other symbol printed in the question. '
+        + 'Rules: (a) keep them in the SAME position as printed \u2014 in Direct Speech the comma/question mark/exclamation mark goes INSIDE the closing quotation mark, exactly like <b>\"The deadline has been extended by two days,\" said the manager.</b> and <b>\"What a beautiful day!\" he exclaimed.</b>; '
+        + '(b) do NOT convert straight quotes to curly quotes or curly to straight \u2014 copy whichever the source uses; '
+        + '(c) do NOT replace an English full stop (.) at the end of a quoted ENGLISH sentence with the Hindi danda (\u0964) \u2014 quoted English keeps its own English punctuation, while your surrounding HINDI prose ends with \u0964 as normal; '
+        + '(d) when the question turns on a punctuation mark (Direct/Indirect Speech, interrogative vs exclamatory vs assertive sentences, Question Tags, contractions, possessive apostrophes), name and show that mark explicitly in the explanation \u2014 e.g. <p><b>Step 2:</b> Direct Speech \u092e\u0947\u0902 \u0935\u093e\u0915\u094d\u092f \u0915\u094b <b>\" \"</b> (Quotation Marks) \u0915\u0947 \u092d\u0940\u0924\u0930 \u0930\u0916\u093e \u091c\u093e\u0924\u093e \u0939\u0948 \u0914\u0930 \u0905\u0902\u0924 \u092e\u0947\u0902 <b>!</b> (Exclamation Mark) \u0932\u0917\u0924\u093e \u0939\u0948\u0964</p>; '
+        + '(e) name such marks in ENGLISH too \u2014 Quotation Marks, Inverted Commas, Apostrophe, Exclamation Mark, Question Mark, Full Stop, Comma, Semicolon, Colon, Hyphen, Dash, Ellipsis, Slash, Backslash \u2014 per the English-terminology rule above; '
+        + '(f) if a symbol has special meaning in HTML, write it as the correct entity so it renders literally: &amp; for &, &lt; for <, &gt; for > \u2014 and make sure quotation marks inside the JSON string are escaped properly (\\\\\" ) so the JSON stays valid; '
+        + '(g) mathematical/scientific symbols still follow the LaTeX rule ($...$); this punctuation rule is about ordinary text symbols.');
+    L.push('STEP LABELS STAY IN ENGLISH: when the explanation is structured as numbered steps, keep the label itself in English as \"<p><b>Step 1:</b> ...</p>\", \"<p><b>Step 2:</b> ...</p>\" \u2014 do NOT translate \"Step\" into \u091a\u0930\u0923/\u0938\u094d\u091f\u0947\u092a. This overrides the general instruction to translate the word \"Step\" into the output language. The step CONTENT is still Hindi.');
+    L.push('SECTION LABELS: if you add an extra-information section, label it in English in the usual bank style \u2014 <p><b>Extra Info:</b> ...</p> \u2014 with the content in Hindi.');
+    L.push('NON-ENGLISH SUBJECTS: for questions that are NOT about the English language (mathematics, science, history, reasoning, etc.), use normal subject-appropriate Hindi terminology as usual \u2014 this English-terminology rule applies only to English-language/grammar/vocabulary/comprehension questions, plus the universal LaTeX and step-numbering rules.');
+    { const d = aiDetailInstruction(detailLevel, 'HINDI'); if (d) L.push('For "explanation_html" (written in Hindi): ' + d); }
+    return L;
+}
+
+function qxBuildPrompt(langMode, transcript, wantSteps, detailLevel, wantHiExpl) {
+    const L = [];
+    L.push('You are an expert exam-question transcriber and subject-matter solver.');
+    if (transcript) {
+        L.push('Below is a raw, exact transcription of ONE multiple-choice question cropped from an exam paper (produced by an OCR/vision step — minor artifacts possible). Reconstruct it faithfully and completely, then solve it.');
+        L.push('');
+        L.push('-----BEGIN TRANSCRIPTION-----');
+        L.push(transcript);
+        L.push('-----END TRANSCRIPTION-----');
+    } else {
+        L.push('The attached image is a crop of ONE multiple-choice question from an exam paper. Transcribe it faithfully and completely, then solve it.');
+    }
+    L.push('');
+    L.push('TRANSCRIPTION RULES:');
+    L.push(`- ${transcript ? 'Reconstruct the question text EXACTLY as transcribed (fix only obvious OCR-level artifacts)' : 'Transcribe the question text EXACTLY as printed (fix only obvious OCR-level artifacts)'}. Use minimal clean HTML (<b>, <i>, <br>) — do NOT use <sub>/<sup> tags (see the NOTATION rule below).`);
+    L.push('- LINE BREAKS (critical — do NOT copy the image\'s visual word-wrap): only insert a <br> where there is a genuine logical break — a new labeled statement/point (A./B./I./II./1./2. etc.), a distinct sentence that is clearly a separate line/point by the author\'s intent, or a real paragraph break. If a sentence merely wraps to the next visual line in the source because of column/page width, that is NOT a break — join the wrapped words back into ONE continuous line with a single space (do not insert <br>, and do not preserve a line break just because the source image had one there). When in doubt whether a break is logical or just word-wrap, prefer joining the text into one continuous line/sentence over inserting a <br>.');
+    L.push('- ' + AI_LATEX_NOTATION_RULE);
+    L.push('- Do NOT include the question number / serial number at the START of the question text in ANY form — e.g. "20.", "20)", "(20)", "Q7", "Q.7", "Q7)", "Que 7.", "Question 7:", or Hindi "प्रश्न 7." / "प्र. 7". Begin "question_html" directly with the first real word of the question stem. (This applies ONLY to the leading paper question-number; genuine numbers inside the question — statement lists "1./2.", values, years, units — are kept as printed.)');
+    L.push('- QUESTION FIELD vs OPTIONS (critical): the "question_html" field must contain ONLY the question stem/body (the problem statement, any statements/lists/table it refers to, and the [image here] placeholder for a figure). Do NOT put any of the four answer OPTIONS\' text inside the question field — the options belong ONLY in the options array. This applies even when the printed layout places options right under the stem: stop the question text before the first option. (Exception: for match-the-list questions the two Lists are part of the stem/table and DO belong in the question; the four code combinations are the options.)');
+    L.push('- IGNORE ANSWER-MARKING ARTIFACTS & HAND MARKS (critical): the crop may contain marks that are NOT part of the printed question — a tick/check (\u2713), cross (\u2717/\u00d7), circle, underline, arrow, tick/cross next to an option, highlighter, or any handwriting / hand-drawn scribble / pen or pencil annotation overlaid on the page. Do NOT transcribe, describe, or reproduce ANY of these marks anywhere (not in the question, options, figure placeholder, or explanation). Transcribe only the original printed text/figure as it was published. You MAY still use such a mark privately as a hint for which option is correct, but never output the mark itself.');
+    L.push('- If the question contains a diagram/figure/graph, insert the placeholder [image here: <very short description>] at its exact position in the question text — do not try to describe the figure in full. Do not include any hand-drawn marks/ticks/crosses in that figure description.');
+    L.push('- MATCH-THE-LIST / MATCH-THE-COLUMNS / TABLE questions: if the question presents two lists to be matched (e.g. "List-I / List-II", "Column A / Column B", or says "Match the following"), OR already contains a tabular layout, render that matching data as a clean HTML <table> inside the question text at the position where it appears, NOT as loose <br> lines. Rules for the table: '
+        + '(a) build a proper <table> with a header row <thead><tr><th>...</th></tr></thead> using the lists own headings (e.g. "List-I (Nuclear Power Plant)" and "List-II (State)"); '
+        + '(b) keep each list item TOGETHER in a SINGLE cell exactly as printed, INCLUDING its own label — put "A. Kudankulam" in one cell and "1. Karnataka" in the adjacent cell on the SAME row. Do NOT split the letter/number label into its own separate column, and do NOT create extra columns for the A/B/C/D or 1/2/3/4 markers; '
+        + '(c) one matched pair per <tr> (row 1: A. ... | 1. ..., row 2: B. ... | 2. ..., and so on), preserving the printed order; '
+        + '(d) if the two lists have unequal length, leave the extra cells empty; '
+        + '(e) use minimal clean HTML — <table>, <thead>, <tbody>, <tr>, <th>, <td>, <b>, <br> only (no inline styles, no class attributes; the frontend styles tables itself); '
+        + '(f) the four answer OPTIONS of such a question are the code combinations (e.g. "A-2, B-4, C-3, D-1") — put each option as one option string in that compact form, NOT as a table.');
+    L.push('- If the question ALREADY contains a table (any tabular data, truth tables, matched lists), reproduce it faithfully as an HTML <table> with the same rows/columns and cell contents (same minimal-HTML rule as above); do not flatten it into <br> lines.');
+    L.push('- Transcribe ALL options in order, WITHOUT their labels ("(1)", "(a)", "A." etc.). If an option is a figure, use [image here: <short description>] as that option\'s text.');
+    L.push('- PUNCTUATION & SYMBOLS (critical): transcribe every punctuation mark and symbol EXACTLY as printed \u2014 do not drop, add, swap or normalise any of them. Keep double quotation marks (\u0022 \u0022 / \u201c \u201d), single quotes and apostrophes (\u2019 / \u2018, including contractions like <i>didn\u2019t</i> and possessives like <i>boy\u2019s</i>), the exclamation mark (!), question mark (?), full stop, comma, semicolon, colon, hyphen, dash (\u2013 \u2014), ellipsis (...), slash (/), backslash (\\\\), ampersand (&), asterisk (*), and brackets. Do NOT convert straight quotes to curly quotes or vice versa \u2014 copy whichever the source uses. In Direct Speech keep the comma / question mark / exclamation mark INSIDE the closing quotation mark exactly as printed. These marks are often the whole point of the question (Direct/Indirect Speech, punctuation correction, interrogative vs exclamatory sentences, Question Tags), so an option that differs from another ONLY by punctuation must be transcribed with that difference intact. Escape symbols that are special in HTML as entities so they render literally (&amp; for &, &lt; for <, &gt; for >), and escape quotation marks correctly inside the JSON strings so the JSON stays valid.');
+    L.push('');
+    L.push('ANSWER & EXPLANATION:');
+    L.push('- If the paper marks the correct answer, use it. Otherwise SOLVE the question rigorously yourself to determine "correct_index" (0-based).');
+    L.push('- Write an explanation justifying the correct answer. It must NOT mention option letters/labels (A/B/C/D), the word "option"/"विकल्प", or phrases like "Correct Answer: (X)" / "सही उत्तर: (X)" — state and justify the answer\'s substance directly. Simple clean HTML: <p><b>concise statement of the answer\'s substance</b></p><p>step-by-step justification</p>.');
+    if (wantSteps) {
+        L.push('- STEP-BY-STEP MATH SOLUTIONS (when applicable): if — and ONLY if — the question is numerical/mathematical/quantitative (requires a calculation, formula, equation, or step-wise numerical/logical derivation), structure the explanation as clearly numbered steps instead of a dense paragraph: each step on its own line as "<p><b>Step 1:</b> ...</p>", "<p><b>Step 2:</b> ...</p>", etc. (translate "Step" into the output language if not English), ending with a final step stating the resulting value/answer. Keep all math in LaTeX ($...$). For purely conceptual/factual/definitional questions with no calculation involved, do NOT force artificial steps — a normal clean explanation is fine.');
+    }
+    {
+        const d = aiDetailInstruction(detailLevel, 'the output language');
+        if (d) L.push('- ' + d + (detailLevel === 'detailed' ? ' For bilingual output, BOTH "explanation_html" and "explanation_html_hi" must meet this depth, each in its own language.' : ''));
+    }
+    L.push('');
+    const hiExplOnly = wantHiExpl && langMode !== 'hi' && langMode !== 'bilingual';
+    if (hiExplOnly) { qxHindiExplInstruction(detailLevel).forEach(x => L.push('- ' + x)); L.push(''); }
+    if (langMode === 'en') {
+        L.push('OUTPUT LANGUAGE: English only ("language":"en") for the question and options. If the image is in another language, translate the question and options faithfully to English.'
+            + (hiExplOnly ? ' The EXPLANATION, however, must be in Hindi per the EXPLANATION LANGUAGE rule above. Keep "language":"en" — this does NOT make the output bilingual.' : ''));
+    } else if (langMode === 'hi') {
+        L.push('OUTPUT LANGUAGE: Hindi only ("language":"hi"). If the image is in another language, translate faithfully to Hindi. Explanation in Hindi.');
+    } else if (langMode === 'bilingual') {
+        L.push('OUTPUT: BILINGUAL. Fill the base fields in ENGLISH and the _hi fields in HINDI ("language":"bilingual"). If the image contains both languages, transcribe each side from the image; otherwise translate faithfully for the missing side. Explanations in their own language.');
+    } else {
+        L.push('OUTPUT LANGUAGE: Auto-detect from the image. If the question is in Hindi, output everything in Hindi with "language":"hi"; if English, "language":"en". If BOTH languages are printed, fill base fields in English, _hi fields in Hindi, "language":"bilingual".'
+            + (hiExplOnly ? ' Whatever language is detected for the question and options, the EXPLANATION must be written in Hindi per the EXPLANATION LANGUAGE rule above. Report "language" as the QUESTION\'s detected language — do not report "bilingual" merely because the explanation is Hindi.' : ''));
+    }
+    L.push('');
+    L.push('Respond with ONLY a single JSON object (no markdown fences):');
+    L.push('{');
+    L.push('  "language": "en" | "hi" | "bilingual",');
+    L.push('  "question_html": "<question text as HTML>",');
+    L.push('  "options": ["option 1", "option 2", ...],');
+    L.push('  "correct_index": <0-based integer>,');
+    L.push('  "confidence": "high" | "medium" | "low",');
+    L.push('  "note": "<1-2 sentences: anything uncertain — unreadable text, figure present, answer solved (not printed), etc. Empty string if nothing.>",');
+    L.push(hiExplOnly
+        ? '  "explanation_html": "<explanation HTML — written in HINDI (see the EXPLANATION LANGUAGE rule)>",'
+        : '  "explanation_html": "<explanation HTML>",');
+    L.push('  "question_html_hi": "<Hindi question HTML — ONLY for bilingual>",');
+    L.push('  "options_hi": ["..."],');
+    L.push(hiExplOnly
+        ? '  "explanation_html_hi": "<leave this out / empty — the Hindi explanation goes in \"explanation_html\">"'
+        : '  "explanation_html_hi": "<Hindi explanation HTML — ONLY for bilingual>"');
+    L.push('}');
+    return L.join('\n');
+}
+
+// ---------- passage-group prompt ----------
+// Passage mode: the crop(s) contain a reading-comprehension PASSAGE (with its
+// directions line, e.g. "निर्देश प्रश्न संख्या 12 से 16 के लिए - ...") plus ALL the
+// questions that belong to it. One AI call returns the passage and every
+// question in a single structured response.
+function qxBuildPassagePrompt(langMode, transcript, wantSteps, detailLevel, wantHiExpl) {
+    const L = [];
+    L.push('You are an expert exam-question transcriber and subject-matter solver.');
+    if (transcript) {
+        L.push('Below is a raw, exact transcription of a READING-COMPREHENSION GROUP cropped from an exam paper: a directions line, a PASSAGE, and ALL the multiple-choice questions based on that passage (produced by an OCR/vision step — minor artifacts possible). Reconstruct the passage and EVERY question faithfully and completely, then solve each question.');
+        L.push('');
+        L.push('-----BEGIN TRANSCRIPTION-----');
+        L.push(transcript);
+        L.push('-----END TRANSCRIPTION-----');
+    } else {
+        L.push('The attached image(s) are crops of a READING-COMPREHENSION GROUP from an exam paper: a directions line, a PASSAGE, and ALL the multiple-choice questions based on that passage. Transcribe the passage and EVERY question faithfully and completely, then solve each question.');
+    }
+    L.push('');
+    L.push('STRUCTURE RULES:');
+    L.push('- DIRECTIONS: the group usually starts with a directions/instruction line (e.g. "निर्देश प्रश्न संख्या 12 से 16 के लिए - निम्नलिखित गद्यांश को ध्यान से पढ़िए..." or "Directions (Q. 12-16): Read the following passage..."). Put that ENTIRE line — including the question-number range — in "directions" EXACTLY as printed, as PLAIN TEXT (no HTML tags).');
+    L.push('- PASSAGE: put the full passage body in "passage_content" EXACTLY as printed, as PLAIN TEXT (no HTML tags; keep it as one continuous paragraph unless the source has a genuine paragraph break, in which case separate paragraphs with a single newline). Do NOT include the directions line or any question inside the passage body.');
+    L.push('- QUESTIONS: extract EVERY question that belongs to this passage, in printed order, into the "questions" array. Do not skip any, do not merge two questions into one, and do not invent questions that are not printed. If the crop also accidentally includes an unrelated non-passage question, EXCLUDE it.');
+    L.push('');
+    L.push('TRANSCRIPTION RULES (apply to every question):');
+    L.push(`- ${transcript ? 'Reconstruct each question text EXACTLY as transcribed (fix only obvious OCR-level artifacts)' : 'Transcribe each question text EXACTLY as printed (fix only obvious OCR-level artifacts)'}. Use minimal clean HTML (<b>, <i>, <br>) — do NOT use <sub>/<sup> tags (see the NOTATION rule below).`);
+    L.push('- LINE BREAKS (critical — do NOT copy the image\'s visual word-wrap): only insert a <br> where there is a genuine logical break. If a sentence merely wraps to the next visual line because of column/page width, join the wrapped words back into ONE continuous line with a single space. When in doubt, join.');
+    L.push('- ' + AI_LATEX_NOTATION_RULE);
+    L.push('- Do NOT include each question\'s own number / serial number at the START of its "question_html" in ANY form — e.g. "12.", "12)", "(12)", "Q12", "Q.12", "Q12)", "Question 12:", or Hindi "प्रश्न 12." / "प्र. 12". Begin every question with the first real word of its stem. (Genuine numbers inside a question — statement lists "1./2.", values, years, units — are kept. The question-number RANGE still belongs in the "directions" line as instructed above.)');
+    L.push('- QUESTION FIELD vs OPTIONS (critical): "question_html" must contain ONLY the question stem — never any of the answer options\' text. The options belong ONLY in the options array.');
+    L.push('- IGNORE ANSWER-MARKING ARTIFACTS & HAND MARKS (critical): ticks/checks (\u2713), crosses (\u2717/\u00d7), circles, underlines, arrows, highlighter, and ANY handwriting or hand-drawn scribbles overlaid on the page are NOT part of the printed content — never transcribe, describe, or reproduce them anywhere (passage, questions, options, or explanations). You MAY use such a mark privately as a hint for which option is correct, but never output the mark itself.');
+    L.push('- Transcribe ALL options of each question in order, WITHOUT their labels ("(1)", "(a)", "A." etc.).');
+    L.push('- PUNCTUATION & SYMBOLS (critical): transcribe every punctuation mark and symbol EXACTLY as printed \u2014 do not drop, add, swap or normalise any of them. Keep double quotation marks (\u0022 \u0022 / \u201c \u201d), single quotes and apostrophes (\u2019 / \u2018, including contractions like <i>didn\u2019t</i> and possessives like <i>boy\u2019s</i>), the exclamation mark (!), question mark (?), full stop, comma, semicolon, colon, hyphen, dash (\u2013 \u2014), ellipsis (...), slash (/), backslash (\\\\), ampersand (&), asterisk (*), and brackets. Do NOT convert straight quotes to curly quotes or vice versa \u2014 copy whichever the source uses. In Direct Speech keep the comma / question mark / exclamation mark INSIDE the closing quotation mark exactly as printed. These marks are often the whole point of the question (Direct/Indirect Speech, punctuation correction, interrogative vs exclamatory sentences, Question Tags), so an option that differs from another ONLY by punctuation must be transcribed with that difference intact. Escape symbols that are special in HTML as entities so they render literally (&amp; for &, &lt; for <, &gt; for >), and escape quotation marks correctly inside the JSON strings so the JSON stays valid. The same applies to the PASSAGE body and the directions line.');
+    L.push('');
+    L.push('ANSWER & EXPLANATION (for every question):');
+    L.push('- If the paper marks the correct answer, use it. Otherwise SOLVE the question rigorously yourself — base the answer on the PASSAGE where the question refers to it — to determine "correct_index" (0-based).');
+    L.push('- Write an explanation justifying each correct answer, grounded in the passage where applicable (quote or reference the relevant part of the passage). It must NOT mention option letters/labels (A/B/C/D), the word "option"/"विकल्प", or phrases like "Correct Answer: (X)" — state and justify the answer\'s substance directly. Simple clean HTML: <p><b>concise statement of the answer\'s substance</b></p><p>justification</p>.');
+    if (wantSteps) {
+        L.push('- STEP-BY-STEP MATH SOLUTIONS: if — and ONLY if — a question is numerical/quantitative, structure its explanation as numbered steps ("<p><b>Step 1:</b> ...</p>" etc., translating "Step" into the output language if not English), keeping all math in LaTeX ($...$). Conceptual questions get a normal explanation.');
+    }
+    {
+        const d = aiDetailInstruction(detailLevel, 'the output language');
+        if (d) L.push('- ' + d + (detailLevel === 'detailed' ? ' For bilingual output, BOTH "explanation_html" and "explanation_html_hi" must meet this depth, each in its own language.' : ''));
+    }
+    L.push('');
+    const hiExplOnly = wantHiExpl && langMode !== 'hi' && langMode !== 'bilingual';
+    if (hiExplOnly) {
+        qxHindiExplInstruction(detailLevel).forEach(x => L.push('- ' + x));
+        L.push('- The rule above applies to EVERY question in the "questions" array: each question\'s "explanation_html" must be written in Hindi, while its question text and options stay in the source language. The PASSAGE and its directions are NOT translated either — keep them in the source language and leave "passage_content_hi"/"directions_hi" empty.');
+        L.push('');
+    }
+    if (langMode === 'en') {
+        L.push('OUTPUT LANGUAGE: English only ("language":"en") for the passage, questions and options. If the source is in another language, translate them faithfully to English.'
+            + (hiExplOnly ? ' Each question\'s EXPLANATION, however, must be in Hindi per the EXPLANATION LANGUAGE rule above. Keep "language":"en".' : ''));
+    } else if (langMode === 'hi') {
+        L.push('OUTPUT LANGUAGE: Hindi only ("language":"hi"). If the source is in another language, translate faithfully to Hindi.');
+    } else if (langMode === 'bilingual') {
+        L.push('OUTPUT: BILINGUAL. Fill the base fields in ENGLISH and the _hi fields in HINDI ("language":"bilingual") — for the passage AND every question. If the source contains both languages, transcribe each side; otherwise translate faithfully for the missing side.');
+    } else {
+        L.push('OUTPUT LANGUAGE: Auto-detect. Hindi source → everything in Hindi with "language":"hi"; English → "language":"en". If BOTH languages are printed, base fields English, _hi fields Hindi, "language":"bilingual".'
+            + (hiExplOnly ? ' Whatever language is detected, every question\'s "explanation_html" must be written in Hindi per the EXPLANATION LANGUAGE rule above. Report "language" as the SOURCE\'s detected language — not "bilingual" merely because the explanations are Hindi.' : ''));
+    }
+    L.push('');
+    L.push('Respond with ONLY a single JSON object (no markdown fences):');
+    L.push('{');
+    L.push('  "language": "en" | "hi" | "bilingual",');
+    L.push('  "directions": "<the printed directions/instruction line, plain text>",');
+    L.push('  "passage_content": "<the full passage body, plain text>",');
+    L.push('  "directions_hi": "<Hindi directions — ONLY for bilingual>",');
+    L.push('  "passage_content_hi": "<Hindi passage body — ONLY for bilingual>",');
+    L.push('  "confidence": "high" | "medium" | "low",');
+    L.push('  "note": "<1-2 sentences: anything uncertain — unreadable text, a question cut off, answer solved (not printed), etc. Empty string if nothing.>",');
+    L.push('  "questions": [');
+    L.push('    {');
+    L.push('      "question_html": "<question text as HTML>",');
+    L.push('      "options": ["option 1", "option 2", ...],');
+    L.push('      "correct_index": <0-based integer>,');
+    L.push(hiExplOnly
+        ? '      "explanation_html": "<explanation HTML — written in HINDI (see the EXPLANATION LANGUAGE rule)>",'
+        : '      "explanation_html": "<explanation HTML>",');
+    L.push('      "question_html_hi": "<Hindi question HTML — ONLY for bilingual>",');
+    L.push('      "options_hi": ["..."],');
+    L.push(hiExplOnly
+        ? '      "explanation_html_hi": "<leave this out / empty — the Hindi explanation goes in \"explanation_html\">"'
+        : '      "explanation_html_hi": "<Hindi explanation HTML — ONLY for bilingual>"');
+    L.push('    },');
+    L.push('    ... one object per question, in printed order ...');
+    L.push('  ]');
+    L.push('}');
+    return L.join('\n');
+}
+
+// Validate + normalize the AI's passage-group JSON into qxState.result shape.
+function qxParsePassageResult(p, wantHiExpl) {
+    const passageContent = String(p.passage_content || '').trim();
+    if (!passageContent) throw new Error('AI returned no passage text.');
+    if (!Array.isArray(p.questions) || !p.questions.length) throw new Error('AI returned no questions for the passage.');
+
+    const language = (p.language === 'hi' || p.language === 'bilingual') ? p.language : 'en';
+    const questions = p.questions.map((q, idx) => {
+        if (!q || typeof q.question_html !== 'string' || !q.question_html.trim())
+            throw new Error(`Question ${idx + 1} came back without text.`);
+        if (!Array.isArray(q.options) || q.options.length < 2)
+            throw new Error(`Question ${idx + 1} came back with fewer than 2 options.`);
+        let ci = parseInt(q.correct_index);
+        if (isNaN(ci) || ci < 0 || ci >= q.options.length) ci = 0;
+        const isBi = language === 'bilingual' && Array.isArray(q.options_hi) && q.options_hi.length;
+        const enOpts = q.options.map(o => String(o == null ? '' : o));
+        const hiOpts = isBi ? q.options_hi.map(o => String(o == null ? '' : o)) : [];
+        return {
+            question: qxStripArtifacts(String(q.question_html), enOpts),
+            options: enOpts,
+            correct: ci,
+            explanation: String(q.explanation_html || ''),
+            hi: isBi ? {
+                question: qxStripArtifacts(String(q.question_html_hi || ''), hiOpts),
+                options: hiOpts,
+                explanation: String(q.explanation_html_hi || ''),
+            } : null,
+            hiExplMode: !isBi && wantHiExpl && language !== 'hi',
+        };
+    });
+
+    return {
+        type: 'passage',
+        language,
+        passage: {
+            directions: String(p.directions || '').trim(),
+            content: passageContent,
+            directionsHi: language === 'bilingual' ? String(p.directions_hi || '').trim() : '',
+            contentHi: language === 'bilingual' ? String(p.passage_content_hi || '').trim() : '',
+        },
+        questions,
+        confidence: /^(high|medium|low)$/i.test(p.confidence || '') ? p.confidence.toLowerCase() : 'medium',
+        note: String(p.note || '').trim(),
+    };
+}
+
+// Idle label for the Extract button, passage-mode aware.
+function qxExtractBtnLabel() {
+    return (document.getElementById('qx-passage') || {}).checked
+        ? 'Extract Passage + Questions with AI'
+        : 'Extract Question with AI';
+}
+
+async function qxExtract() {
+    if (qxState.busy) return;
+    if (!qxPoolActiveKeys().length && !qxPoolConfiguredKeys().length) {
+        showToast('Extractor keys missing',
+            `No ${QX_PROVIDERS[qxPools.provider].label} keys configured — open "Extractor API Settings" at the top of this tab and add at least one key (or switch provider).`, 'error');
+        return;
+    }
+    // Gather all crops for this question: any queued (from other pages) plus
+    // the current on-screen selection, if one is drawn. The queued crops come
+    // first so page order is preserved.
+    const images = [];
+    const thumbs = [];
+    qxState.crops.forEach(c => { if (c && c.b64) { images.push(c.b64); thumbs.push(c.thumb || ''); } });
+
+    const crop = qxGetCropCanvas({ silent: qxState.crops.length > 0 });
+    if (crop) {
+        const apiCanvas = qxScaleCanvas(crop, 1600);
+        images.push(apiCanvas.toDataURL('image/webp', 0.92).split(',')[1]);
+        thumbs.push(qxScaleCanvas(crop, 300).toDataURL('image/jpeg', 0.7));
+    }
+
+    if (!images.length) {
+        showToast('No selection', 'Drag a box around the question (or add crops) first.', 'error');
+        return;
+    }
+
+    // Thumbnail stored with the record — first crop is representative.
+    qxState.cropThumb = thumbs[0] || '';
+
+    const langMode = (document.getElementById('qx-lang') || {}).value || 'auto';
+    const wantSteps = !!(document.getElementById('qx-steps') || {}).checked;
+    const detailLevel = (document.getElementById('qx-detail') || {}).value || 'detailed';
+    const passageMode = !!(document.getElementById('qx-passage') || {}).checked;
+    // "+ Hindi explanation": keep the question/options/explanation in their own
+    // language and ADDITIONALLY produce a Hindi explanation. Only meaningful
+    // when the output is not already Hindi / bilingual.
+    const wantHiExpl = !!(document.getElementById('qx-hi-expl') || {}).checked
+        && langMode !== 'hi' && langMode !== 'bilingual';
+
+    qxState.busy = true;
+    const btn = document.getElementById('qx-extract-btn');
+    const label = document.getElementById('qx-extract-label');
+    if (btn) btn.disabled = true;
+    if (label) label.textContent = passageMode ? 'Extracting passage & questions with AI…' : 'Extracting with AI…';
+
+    try {
+        const call = await qxRunExtraction(passageMode ? qxBuildPassagePrompt : qxBuildPrompt, langMode, images, wantSteps, detailLevel, wantHiExpl);
+        const raw = call.text;
+        const p = aiParseJson(raw);
+
+        if (passageMode) {
+            qxState.result = qxParsePassageResult(p, wantHiExpl);
+            qxRenderReview();
+            if (qxState.crops.length) { qxState.crops = []; qxRenderCropQueue(); }
+            showToast('Passage extracted', `Passage + ${qxState.result.questions.length} question${qxState.result.questions.length === 1 ? '' : 's'} — review below, then Save to Question Bank.`, 'success');
+            return;
+        }
+
+        if (typeof p.question_html !== 'string' || !p.question_html.trim()) throw new Error('AI returned no question text.');
+        if (!Array.isArray(p.options) || p.options.length < 2) throw new Error('AI returned fewer than 2 options.');
+        let ci = parseInt(p.correct_index);
+        if (isNaN(ci) || ci < 0 || ci >= p.options.length) ci = 0;
+
+        const isBi = p.language === 'bilingual' && Array.isArray(p.options_hi) && p.options_hi.length;
+        const enOpts = p.options.map(o => String(o == null ? '' : o));
+        const hiOpts = isBi ? p.options_hi.map(o => String(o == null ? '' : o)) : [];
+        qxState.result = {
+            language: (p.language === 'hi' || p.language === 'bilingual') ? p.language : 'en',
+            question: qxStripArtifacts(String(p.question_html), enOpts),
+            options: enOpts,
+            correct: ci,
+            confidence: /^(high|medium|low)$/i.test(p.confidence || '') ? p.confidence.toLowerCase() : 'medium',
+            note: String(p.note || '').trim(),
+            explanation: String(p.explanation_html || ''),
+            hi: isBi ? {
+                question: qxStripArtifacts(String(p.question_html_hi || ''), hiOpts),
+                options: hiOpts,
+                explanation: String(p.explanation_html_hi || ''),
+            } : null,
+            // Hindi-explanation-only add-on: no Hindi question/options, just a
+            // Hindi explanation that is saved into _aimcq_explanation_hi.
+            // Explanation was requested in Hindi while the question stays in
+            // its own language. It arrives in the MAIN explanation field, so
+            // there is nothing extra to store — just remember the mode for
+            // the review/bank labels.
+            hiExplMode: !isBi && wantHiExpl && p.language !== 'hi',
+        };
+        qxRenderReview();
+        // Consumed the queued crops — reset for the next question.
+        if (qxState.crops.length) { qxState.crops = []; qxRenderCropQueue(); }
+        showToast('Question extracted', 'Review the fields below, edit if needed, then Save to Question Bank.', 'success');
+    } catch (err) {
+        showToast('Extraction failed', aiFriendlyError(err), 'error');
+    } finally {
+        qxState.busy = false;
+        if (btn) btn.disabled = false;
+        if (label) label.textContent = qxExtractBtnLabel();
+    }
+}
+
+// ---------- review UI ----------
+function qxEsc(s) {
+    return String(s == null ? '' : s)
+        .replace(/&/g, '&amp;').replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+
+function qxFieldsHtml(prefix, data, heading) {
+    let opts = '';
+    data.options.forEach((o, i) => {
+        const letter = OPTION_LETTERS[i] || String(i + 1);
+        opts += `
+        <div class="qx-opt-row" data-prefix="${prefix}">
+            <label class="qx-opt-radio" title="Mark as the correct option">
+                <input type="radio" name="qx-correct-${prefix}" value="${i}" ${i === data.correct ? 'checked' : ''}>
+                <span>${letter}</span>
+            </label>
+            <input type="text" class="qx-opt-input" value="${qxEsc(o)}">
+            <button type="button" class="qx-opt-del" title="Remove this option"><i data-lucide="x" class="w-3.5 h-3.5"></i></button>
+        </div>`;
+    });
+    const lang = prefix === 'hi' ? ' data-lang="hi"' : '';
+    // In "Hindi explanation" mode the question/options stay in their own
+    // language while the single explanation field holds Hindi text — so only
+    // the label changes, there is no extra editor.
+    const explLabel = data.hiExplMode
+        ? 'Explanation <span class="font-normal normal-case text-gray-400">(\u0939\u093f\u0928\u094d\u0926\u0940 \u092e\u0947\u0902 \u2014 saved to _aimcq_explanation)</span>'
+        : 'Explanation';
+    return `
+    ${heading ? `<p class="text-xs font-bold text-gray-500 uppercase tracking-wider mb-2">${heading}</p>` : ''}
+    <label class="qx-lbl">Question</label>
+    <div class="rich-editor-wrap" data-field="qx-${prefix}-question"${lang}></div>
+    <label class="qx-lbl mt-3">Options <span class="font-normal normal-case text-gray-400">(radio = correct answer)</span></label>
+    <div id="qx-${prefix}-opts">${opts}</div>
+    <button type="button" class="qx-add-opt" data-prefix="${prefix}"><i data-lucide="plus" class="w-3.5 h-3.5"></i> Add option</button>
+    <label class="qx-lbl mt-3">${explLabel}</label>
+    <div class="rich-editor-wrap" data-field="qx-${prefix}-explanation"${data.hiExplMode ? ' data-lang="hi"' : lang}></div>`;
+}
+
+// Wire option add/remove buttons inside the review panel (delegated per render).
+function qxWireOptionRows(review) {
+    review.querySelectorAll('.qx-add-opt').forEach(b => b.addEventListener('click', () => {
+        const prefix = b.getAttribute('data-prefix');
+        const wrap = document.getElementById(`qx-${prefix}-opts`);
+        const i = wrap.querySelectorAll('.qx-opt-row').length;
+        const letter = OPTION_LETTERS[i] || String(i + 1);
+        const div = document.createElement('div');
+        div.className = 'qx-opt-row';
+        div.setAttribute('data-prefix', prefix);
+        div.innerHTML = `
+            <label class="qx-opt-radio"><input type="radio" name="qx-correct-${prefix}" value="${i}"><span>${letter}</span></label>
+            <input type="text" class="qx-opt-input" value="">
+            <button type="button" class="qx-opt-del"><i data-lucide="x" class="w-3.5 h-3.5"></i></button>`;
+        wrap.appendChild(div);
+        div.querySelector('.qx-opt-del').addEventListener('click', () => { div.remove(); });
+        lucide.createIcons();
+    }));
+    review.querySelectorAll('.qx-opt-del').forEach(b => b.addEventListener('click', () => {
+        b.closest('.qx-opt-row').remove();
+    }));
+}
+
+function qxRenderReview() {
+    const r = qxState.result;
+    if (!r) return;
+    if (r.type === 'passage') { qxRenderPassageReview(); return; }
+    const review = document.getElementById('qx-review');
+    const fields = document.getElementById('qx-fields');
+    const fieldsHi = document.getElementById('qx-fields-hi');
+    const thumb = document.getElementById('qx-crop-thumb');
+    const note = document.getElementById('qx-ai-note');
+    const conf = document.getElementById('qx-confidence');
+
+    if (thumb) thumb.src = qxState.cropThumb || '';
+    if (note) note.textContent = r.note ? `AI note: ${r.note}` : '';
+    if (conf) {
+        const langTag = r.language === 'bilingual' ? 'EN + HI'
+            : r.language.toUpperCase() + ((!r.hi && r.hiExplMode) ? ' · HI explanation' : '');
+        conf.textContent = `${r.confidence} confidence · ${langTag}`;
+        conf.classList.toggle('on', r.confidence === 'high');
+        conf.classList.toggle('off', r.confidence !== 'high');
+    }
+
+    fields.innerHTML = qxFieldsHtml('en', {
+        question: r.question, options: r.options, correct: r.correct,
+        explanation: r.explanation,
+        hiExplMode: !r.hi && !!r.hiExplMode,
+    }, r.hi ? 'English' : '');
+    if (r.hi) {
+        fieldsHi.classList.remove('hidden');
+        fieldsHi.innerHTML = qxFieldsHtml('hi', { question: r.hi.question, options: r.hi.options, correct: r.correct, explanation: r.hi.explanation }, 'हिन्दी (Hindi)');
+    } else {
+        fieldsHi.classList.add('hidden');
+        fieldsHi.innerHTML = '';
+    }
+
+    // Rich editors for question & explanation (same editor as the Question
+    // Editor tab: formatting toolbar, HTML source view, live KaTeX preview).
+    review.querySelectorAll('#qx-fields .rich-editor-wrap, #qx-fields-hi .rich-editor-wrap')
+        .forEach(w => buildRichEditor(w));
+    setReValue('qx-en-question', r.question || '');
+    setReValue('qx-en-explanation', r.explanation || '');
+    if (r.hi) {
+        setReValue('qx-hi-question', r.hi.question || '');
+        setReValue('qx-hi-explanation', r.hi.explanation || '');
+    }
+
+    qxWireOptionRows(review);
+
+    review.classList.remove('hidden');
+    qxSetReviewMode('preview');   // students-eye view first; Editor is one click away
+    lucide.createIcons();
+    try { review.scrollIntoView({ behavior: 'smooth', block: 'nearest' }); } catch (e) {}
+}
+
+// ---------- passage review ----------
+// Renders the whole passage group in one review panel: the passage's
+// directions + body (plain-text editors — the aimcq passage format stores
+// plain text), then every question with the same rich-editor fields as a
+// normal single-question review, all under per-question prefixes en0/hi0/en1…
+function qxPassageTextareasHtml(r) {
+    const bi = r.language === 'bilingual';
+    const block = (suffix, dirVal, bodyVal, heading) => `
+        ${heading ? `<p class="text-xs font-bold text-gray-500 uppercase tracking-wider mb-2 mt-1">${heading}</p>` : ''}
+        <label class="qx-lbl">Directions line <span class="font-normal normal-case text-gray-400">(e.g. "निर्देश प्रश्न संख्या 12 से 16 के लिए - …" — stored as the passage title)</span></label>
+        <textarea id="qx-passage-dir-${suffix}" class="qx-ta" rows="2">${qxEsc(dirVal)}</textarea>
+        <label class="qx-lbl mt-3">Passage text</label>
+        <textarea id="qx-passage-body-${suffix}" class="qx-ta" rows="6">${qxEsc(bodyVal)}</textarea>`;
+    return `
+    <div class="qx-passage-box">
+        <p class="qx-passage-box-title"><i data-lucide="book-open-text" class="w-4 h-4 inline-block -mt-0.5 mr-1"></i>Passage</p>
+        ${block('en', r.passage.directions, r.passage.content, bi ? 'English' : '')}
+        ${bi ? block('hi', r.passage.directionsHi, r.passage.contentHi, 'हिन्दी (Hindi)') : ''}
+    </div>`;
+}
+
+function qxRenderPassageReview() {
+    const r = qxState.result;
+    if (!r || r.type !== 'passage') return;
+    const review = document.getElementById('qx-review');
+    const fields = document.getElementById('qx-fields');
+    const fieldsHi = document.getElementById('qx-fields-hi');
+    const thumb = document.getElementById('qx-crop-thumb');
+    const note = document.getElementById('qx-ai-note');
+    const conf = document.getElementById('qx-confidence');
+
+    if (thumb) thumb.src = qxState.cropThumb || '';
+    if (note) note.textContent = r.note ? `AI note: ${r.note}` : '';
+    if (conf) {
+        conf.textContent = `passage · ${r.questions.length} Q · ${r.confidence} confidence · ${r.language === 'bilingual' ? 'EN + HI' : r.language.toUpperCase()}`;
+        conf.classList.toggle('on', r.confidence === 'high');
+        conf.classList.toggle('off', r.confidence !== 'high');
+    }
+
+    // Everything renders into #qx-fields; the separate #qx-fields-hi panel is
+    // unused in passage mode (each question carries its own Hindi block).
+    fieldsHi.classList.add('hidden');
+    fieldsHi.innerHTML = '';
+
+    let html = qxPassageTextareasHtml(r);
+    r.questions.forEach((q, i) => {
+        html += `
+        <div class="qx-passage-q" data-qidx="${i}">
+            <p class="qx-passage-q-head">Question ${i + 1} of ${r.questions.length}</p>
+            ${qxFieldsHtml('en' + i, { question: q.question, options: q.options, correct: q.correct, explanation: q.explanation, hiExplMode: !q.hi && !!q.hiExplMode }, q.hi ? 'English' : '')}
+            ${q.hi ? qxFieldsHtml('hi' + i, { question: q.hi.question, options: q.hi.options, correct: q.correct, explanation: q.hi.explanation }, 'हिन्दी (Hindi)') : ''}
+        </div>`;
+    });
+    fields.innerHTML = html;
+
+    review.querySelectorAll('#qx-fields .rich-editor-wrap').forEach(w => buildRichEditor(w));
+    r.questions.forEach((q, i) => {
+        setReValue(`qx-en${i}-question`, q.question || '');
+        setReValue(`qx-en${i}-explanation`, q.explanation || '');
+        if (q.hi) {
+            setReValue(`qx-hi${i}-question`, q.hi.question || '');
+            setReValue(`qx-hi${i}-explanation`, q.hi.explanation || '');
+        }
+    });
+
+    qxWireOptionRows(review);
+
+    review.classList.remove('hidden');
+    qxSetReviewMode('preview');
+    lucide.createIcons();
+    try { review.scrollIntoView({ behavior: 'smooth', block: 'nearest' }); } catch (e) {}
+}
+
+// ---------- preview / editor mode ----------
+// Preview renders the CURRENT (possibly edited) field values exactly the
+// way a student sees the question in the quiz frontend — question text,
+// lettered options with the correct one highlighted, and the explanation —
+// with KaTeX rendering. Edits are kept: the editor fields are only hidden,
+// and Preview re-reads them every time it is opened.
+function qxSetReviewMode(mode) {
+    const fields = document.getElementById('qx-fields');
+    const fieldsHi = document.getElementById('qx-fields-hi');
+    const prev = document.getElementById('qx-preview-panel');
+    const switcher = document.getElementById('qx-review-mode');
+    if (!fields || !prev) return;
+    const preview = mode === 'preview';
+    if (switcher) switcher.querySelectorAll('button').forEach(b =>
+        b.classList.toggle('active', b.getAttribute('data-mode') === (preview ? 'preview' : 'editor')));
+
+    if (preview) {
+        const r = qxState.result;
+        if (r && r.type === 'passage') {
+            prev.innerHTML = qxBuildPassagePreviewHtml(r);
+        } else {
+            const en = qxCollectFields('en');
+            const hi = (r && r.hi) ? qxCollectFields('hi') : null;
+            prev.innerHTML = qxBuildPreviewHtml(en, hi);
+        }
+        try { if (typeof renderKatex === 'function') prev.querySelectorAll('.qx-prev-katex').forEach(el => renderKatex(el)); } catch (e) {}
+        prev.classList.remove('hidden');
+        fields.classList.add('hidden');
+        if (fieldsHi) fieldsHi.classList.add('hidden');
+    } else {
+        prev.classList.add('hidden');
+        fields.classList.remove('hidden');
+        if (fieldsHi && qxState.result && qxState.result.hi) fieldsHi.classList.remove('hidden');
+    }
+    qxState.reviewMode = preview ? 'preview' : 'editor';
+    try { lucide.createIcons(); } catch (e) {}
+}
+
+function qxPreviewSection(data, langLabel) {
+    if (!data) return '';
+    const opts = data.options
+        .map((o, i) => ({ text: o, i }))
+        .filter(o => o.text !== '');
+    const rows = opts.map((o, shown) => {
+        const letter = OPTION_LETTERS[shown] || String(shown + 1);
+        const correct = o.i === data.correct;
+        return `<div class="qx-prev-opt ${correct ? 'correct' : ''}">
+            <span class="qx-prev-letter">${letter}</span>
+            <span class="qx-prev-opt-text qx-prev-katex">${o.text}</span>
+            ${correct ? '<span class="qx-prev-check">✓ Correct</span>' : ''}
+        </div>`;
+    }).join('');
+    return `
+    <div class="qx-prev-section">
+        ${langLabel ? `<p class="qx-prev-langlabel">${langLabel}</p>` : ''}
+        <div class="qx-prev-q qx-prev-katex">${data.question || '<span class="text-gray-400">(empty question)</span>'}</div>
+        <div class="qx-prev-opts">${rows || '<p class="text-xs text-gray-400">(no options)</p>'}</div>
+        ${(data.explanation || '').trim() ? `
+        <div class="qx-prev-expl">
+            <p class="qx-prev-expl-label">Explanation</p>
+            <div class="qx-prev-katex">${data.explanation}</div>
+        </div>` : ''}
+    </div>`;
+}
+
+function qxBuildPreviewHtml(en, hi) {
+    return qxPreviewSection(en, hi ? 'English' : '')
+        + (hi ? '<div class="qx-prev-divider"></div>' + qxPreviewSection(hi, 'हिन्दी (Hindi)') : '');
+}
+
+// Passage-group preview: passage box (directions + body, exactly how the quiz
+// frontend shows the passage above its questions) followed by every question.
+function qxBuildPassagePreviewHtml(r) {
+    const pv = qxCollectPassageFields();
+    const nl2br = s => qxEsc(s).replace(/\n/g, '<br>');
+    const passageBlock = (dir, body, langLabel) => `
+        <div class="qx-prev-passage">
+            ${langLabel ? `<p class="qx-prev-langlabel">${langLabel}</p>` : ''}
+            ${dir ? `<p class="qx-prev-passage-dir">${nl2br(dir)}</p>` : ''}
+            <div class="qx-prev-passage-body">${nl2br(body) || '<span class="text-gray-400">(empty passage)</span>'}</div>
+        </div>`;
+    let html = passageBlock(pv.directions, pv.content, pv.bilingual ? 'English' : '');
+    if (pv.bilingual) html += passageBlock(pv.directionsHi, pv.contentHi, 'हिन्दी (Hindi)');
+    (r.questions || []).forEach((q, i) => {
+        const en = qxCollectFields('en' + i);
+        const hi = q.hi ? qxCollectFields('hi' + i) : null;
+        html += `<div class="qx-prev-divider"></div><p class="qx-prev-qnum">Question ${i + 1}</p>` + qxBuildPreviewHtml(en, hi);
+    });
+    return html;
+}
+
+// Read the passage textareas back (current, possibly edited values).
+function qxCollectPassageFields() {
+    const val = id => { const el = document.getElementById(id); return el ? el.value.trim() : ''; };
+    const r = qxState.result || {};
+    const bilingual = r.language === 'bilingual';
+    return {
+        bilingual,
+        directions: val('qx-passage-dir-en'),
+        content: val('qx-passage-body-en'),
+        directionsHi: bilingual ? val('qx-passage-dir-hi') : '',
+        contentHi: bilingual ? val('qx-passage-body-hi') : '',
+    };
+}
+
+function qxCollectFields(prefix) {
+    if (!reRegistry[`qx-${prefix}-question`]) return null;   // fields not built
+    const rows = document.querySelectorAll(`#qx-${prefix}-opts .qx-opt-row`);
+    const options = [];
+    let correct = 0;
+    rows.forEach((row, i) => {
+        options.push(row.querySelector('.qx-opt-input').value.trim());
+        if (row.querySelector('input[type=radio]').checked) correct = i;
+    });
+    return {
+        question: (getReValue(`qx-${prefix}-question`) || '').trim(),
+        options,
+        correct,
+        explanation: getReValue(`qx-${prefix}-explanation`) || '',
+    };
+}
+
+// ---------- save / bank ----------
+function qxPad(n) { return String(n).padStart(2, '0'); }
+function qxNowStr() {
+    const d = new Date();
+    return `${d.getFullYear()}-${qxPad(d.getMonth() + 1)}-${qxPad(d.getDate())} ${qxPad(d.getHours())}:${qxPad(d.getMinutes())}:${qxPad(d.getSeconds())}`;
+}
+
+async function qxSaveToBank() {
+    const r = qxState.result;
+    if (!r) return;
+    if (r.type === 'passage') { await qxSavePassageToBank(); return; }
+    const en = qxCollectFields('en');
+    if (!en || !en.question) { showToast('Question empty', 'The question text cannot be empty.', 'error'); return; }
+    const cleanOpts = en.options.filter(o => o !== '');
+    if (cleanOpts.length < 2) { showToast('Options missing', 'At least 2 non-empty options are required.', 'error'); return; }
+    if (en.correct >= en.options.length || en.options[en.correct] === '') en.correct = en.options.findIndex(o => o !== '');
+
+    const isHiOnly = r.language === 'hi' && !r.hi;
+    const hi = r.hi ? qxCollectFields('hi') : null;
+
+    const meta = {
+        _aimcq_options: en.options.filter(o => o !== '').map(t => ({ text: t, image: '' })),
+        _aimcq_correct_answers: [Math.max(0, en.options.filter((o, i) => o !== '' && i <= en.correct).length - 1)],
+        _aimcq_explanation: en.explanation,
+    };
+    if (hi && hi.question) {
+        meta._aimcq_title_hi = stripHtmlTags(hi.question).slice(0, 120);
+        meta._aimcq_question_content_hi = hi.question;
+        meta._aimcq_options_hi = hi.options.filter(o => o !== '').map(t => ({ text: t, image: '' }));
+        meta._aimcq_explanation_hi = hi.explanation;
+    }
+
+    const id = Date.now();
+    const post = {
+        id,
+        post_author: 1,
+        post_date: qxNowStr(),
+        post_title: stripHtmlTags(en.question).slice(0, 120) || 'Extracted question',
+        post_content: en.question,
+        post_status: 'publish',
+        post_type: 'question',
+        meta_input: meta,
+        taxonomies: {},
+        embedded_media: [],
+    };
+
+    const saveLib = (document.getElementById('qx-save-lib') || {}).value || qxLibSelection().save || QX_LIB_DEFAULT;
+    try {
+        await qxDbPut({
+            id,
+            created: new Date().toISOString(),
+            language: isHiOnly ? 'hi' : (hi ? 'bilingual' : r.language),
+            thumb: qxState.cropThumb || '',
+            library: saveLib,
+            post,
+        });
+    } catch (err) {
+        showToast('Save failed', 'IndexedDB error: ' + (err.message || err), 'error');
+        return;
+    }
+    { const sel = qxLibSelection(); sel.save = saveLib; qxLibSaveSelection(sel); }
+
+    qxState.result = null;
+    document.getElementById('qx-review').classList.add('hidden');
+    await qxRenderBank();
+    {
+        const libs = await qxLibEnsure();
+        const libName = (libs.find(l => l.id === saveLib) || {}).name || 'General';
+        showToast('Saved to Question Bank', `Stored in "${libName}" — crop the next question to continue.`, 'success');
+    }
+}
+
+// Save a whole passage group: one `passage` post + one linked `question` post
+// per question, exactly in the aimcq passage format (the same shape the
+// Question Editor imports/exports):
+//   passage  → post_type "passage", passage text in post_title/post_content,
+//              display-title & Hindi-content passage meta keys
+//   question → _aimcq_is_passage_question:"yes", _aimcq_passage_id:"<id>"
+async function qxSavePassageToBank() {
+    const r = qxState.result;
+    if (!r || r.type !== 'passage') return;
+
+    const pv = qxCollectPassageFields();
+    if (!pv.content) { showToast('Passage empty', 'The passage text cannot be empty.', 'error'); return; }
+
+    // Collect + validate every question before saving anything.
+    const collected = [];
+    for (let i = 0; i < r.questions.length; i++) {
+        const en = qxCollectFields('en' + i);
+        if (!en || !en.question) { showToast(`Question ${i + 1} empty`, 'Its question text cannot be empty.', 'error'); return; }
+        const cleanOpts = en.options.filter(o => o !== '');
+        if (cleanOpts.length < 2) { showToast(`Question ${i + 1} options missing`, 'At least 2 non-empty options are required.', 'error'); return; }
+        if (en.correct >= en.options.length || en.options[en.correct] === '') en.correct = en.options.findIndex(o => o !== '');
+        const hi = r.questions[i].hi ? qxCollectFields('hi' + i) : null;
+        collected.push({ en, hi });
+    }
+
+    const isHiOnly = r.language === 'hi';
+    const bilingual = r.language === 'bilingual';
+    const now = qxNowStr();
+    const created = new Date().toISOString();
+    const passageId = Date.now();
+    const saveLib = (document.getElementById('qx-save-lib') || {}).value || qxLibSelection().save || QX_LIB_DEFAULT;
+    const recLang = isHiOnly ? 'hi' : (bilingual ? 'bilingual' : 'en');
+
+    // ---- passage post (matches the standard aimcq passage shape) ----
+    const passagePost = {
+        id: passageId,
+        post_author: 1,
+        post_date: now,
+        post_title: pv.directions || stripHtmlTags(pv.content).slice(0, 120),
+        post_content: pv.content,
+        post_status: 'publish',
+        post_type: 'passage',
+        meta_input: {
+            _aimcq_passage_content_hi: bilingual ? pv.contentHi : '',
+            _aimcq_passage_translation_custom_prompt: '',
+            _aimcq_passage_display_title_en: pv.directions || '',
+            _aimcq_passage_display_title_hi: bilingual ? pv.directionsHi : '',
+            _aimcq_explanation: '',
+        },
+        taxonomies: [],
+        embedded_media: [],
+    };
+
+    // ---- question posts, linked to the passage ----
+    const questionRecs = collected.map((c, i) => {
+        const { en, hi } = c;
+        const meta = {
+            _aimcq_options: en.options.filter(o => o !== '').map(t => ({ text: t, image: '' })),
+            _aimcq_explanation: en.explanation,
+            _aimcq_is_passage_question: 'yes',
+            _aimcq_passage_id: String(passageId),
+            _aimcq_correct_answers: [Math.max(0, en.options.filter((o, j) => o !== '' && j <= en.correct).length - 1)],
+        };
+        if (hi && hi.question) {
+            meta._aimcq_title_hi = stripHtmlTags(hi.question).slice(0, 120);
+            meta._aimcq_question_content_hi = hi.question;
+            meta._aimcq_options_hi = hi.options.filter(o => o !== '').map(t => ({ text: t, image: '' }));
+            meta._aimcq_explanation_hi = hi.explanation;
+        }
+        const id = passageId + 1 + i;   // keeps export order: passage first, then its questions
+        return {
+            id,
+            created,
+            language: recLang,
+            thumb: i === 0 ? (qxState.cropThumb || '') : '',
+            library: saveLib,
+            passageId,
+            post: {
+                id,
+                post_author: 1,
+                post_date: now,
+                post_title: stripHtmlTags(en.question).slice(0, 120) || `Passage question ${i + 1}`,
+                post_content: en.question,
+                post_status: 'publish',
+                post_type: 'question',
+                meta_input: meta,
+                taxonomies: {},
+                embedded_media: [],
+            },
+        };
+    });
+
+    try {
+        await qxDbPut({
+            id: passageId,
+            created,
+            language: recLang,
+            thumb: qxState.cropThumb || '',
+            library: saveLib,
+            isPassage: true,
+            post: passagePost,
+        });
+        for (const rec of questionRecs) await qxDbPut(rec);
+    } catch (err) {
+        showToast('Save failed', 'IndexedDB error: ' + (err.message || err), 'error');
+        return;
+    }
+    { const sel = qxLibSelection(); sel.save = saveLib; qxLibSaveSelection(sel); }
+
+    qxState.result = null;
+    document.getElementById('qx-review').classList.add('hidden');
+    await qxRenderBank();
+    {
+        const libs = await qxLibEnsure();
+        const libName = (libs.find(l => l.id === saveLib) || {}).name || 'General';
+        showToast('Passage saved to Question Bank', `Passage + ${questionRecs.length} linked question${questionRecs.length === 1 ? '' : 's'} stored in "${libName}".`, 'success');
+    }
+}
+
+async function qxRenderBank() {
+    const list = document.getElementById('qx-bank-list');
+    const countChip = document.getElementById('qx-bank-count');
+    if (!list) return;
+
+    const libs = await qxLibEnsure();
+    const sel = qxLibSelection();
+    if (sel.view !== 'all' && !libs.some(l => l.id === sel.view)) sel.view = 'all';
+    if (!libs.some(l => l.id === sel.save)) sel.save = QX_LIB_DEFAULT;
+    qxLibSaveSelection(sel);
+    const libName = id => (libs.find(l => l.id === id) || {}).name || 'General';
+
+    // Populate both selectors
+    const saveSel = document.getElementById('qx-save-lib');
+    if (saveSel) {
+        saveSel.innerHTML = libs.map(l => `<option value="${l.id}">${qxEsc(l.name)}</option>`).join('');
+        saveSel.value = sel.save;
+    }
+    const viewSel = document.getElementById('qx-lib-view');
+    if (viewSel) {
+        viewSel.innerHTML = '<option value="all">All libraries</option>' +
+            libs.map(l => `<option value="${l.id}">${qxEsc(l.name)}</option>`).join('');
+        viewSel.value = sel.view;
+    }
+    const delLibBtn = document.getElementById('qx-lib-del');
+    if (delLibBtn) delLibBtn.classList.toggle('hidden', sel.view === 'all' || sel.view === QX_LIB_DEFAULT);
+    const clearLabel = document.getElementById('qx-clear-label');
+    if (clearLabel) clearLabel.textContent = sel.view === 'all' ? 'Delete All' : `Delete All in "${libName(sel.view)}"`;
+
+    let recs = [];
+    try { recs = await qxDbAll(); } catch (e) {}
+    recs.forEach(r => { if (!r.library) r.library = QX_LIB_DEFAULT; });   // v1 records → General
+    const shown = sel.view === 'all' ? recs : recs.filter(r => r.library === sel.view);
+    shown.sort((a, b) => (a.id || 0) - (b.id || 0));
+
+    if (countChip) {
+        const scope = sel.view === 'all' ? `across ${libs.length} librar${libs.length === 1 ? 'y' : 'ies'}` : `in ${libName(sel.view)}`;
+        countChip.textContent = `${shown.length} question${shown.length === 1 ? '' : 's'} ${scope}`;
+        countChip.classList.toggle('on', shown.length > 0);
+        countChip.classList.toggle('off', shown.length === 0);
+    }
+
+    if (!shown.length) {
+        list.innerHTML = `<p class="text-sm text-gray-400 px-4 py-6 text-center">No questions ${sel.view === 'all' ? 'saved yet' : `in "${qxEsc(libName(sel.view))}" yet`} — crop &amp; extract a question above.</p>`;
+        return;
+    }
+
+    list.innerHTML = shown.map((rec, i) => {
+        const title = qxEsc(stripHtmlTags((rec.post && rec.post.post_title) || '').slice(0, 90));
+        // An English/other-language question whose single explanation is Hindi.
+        const hiExplOnly = !!(rec.post && rec.post.meta_input
+            && !(rec.post.meta_input._aimcq_question_content_hi || '').trim()
+            && /[\u0900-\u097F]/.test(rec.post.meta_input._aimcq_explanation || '')
+            && !/[\u0900-\u097F]/.test(stripHtmlTags((rec.post.post_content) || '')));
+        const langBadge = rec.language === 'bilingual' ? 'EN+HI'
+            : (rec.language || 'en').toUpperCase() + (hiExplOnly ? '+HI expl' : '');
+        const date = rec.created ? new Date(rec.created).toLocaleString() : '';
+        const libBadge = sel.view === 'all' ? `<span class="qx-lib-badge">${qxEsc(libName(rec.library))}</span> · ` : '';
+        const isPassage = !!(rec.post && rec.post.post_type === 'passage');
+        const passageBadge = isPassage ? '<span class="qx-passage-badge">Passage</span> · '
+            : (rec.passageId ? '<span class="qx-passage-badge linked">Passage Q</span> · ' : '');
+        const detail = isPassage
+            ? `${recs.filter(x => String(x.passageId || '') === String(rec.id)).length} linked questions`
+            : `${(rec.post && rec.post.meta_input && rec.post.meta_input._aimcq_options || []).length} options`;
+        return `
+        <div class="qx-bank-row" data-id="${rec.id}">
+            ${rec.thumb ? `<img src="${rec.thumb}" class="qx-bank-thumb" alt="">` : '<div class="qx-bank-thumb qx-bank-thumb-empty"><i data-lucide="file-question" class="w-4 h-4"></i></div>'}
+            <div class="qx-bank-main">
+                <p class="qx-bank-title"><span class="qx-bank-num">${i + 1}.</span> ${title || '(untitled)'}</p>
+                <p class="qx-bank-sub">${libBadge}${passageBadge}${langBadge} · ${detail} · ${qxEsc(date)}</p>
+            </div>
+            <button type="button" class="qx-bank-del" data-id="${rec.id}" title="Delete this ${isPassage ? 'passage (and its linked questions)' : 'question'} from the bank">
+                <i data-lucide="trash-2" class="w-3.5 h-3.5"></i>
+            </button>
+        </div>`;
+    }).join('');
+
+    list.querySelectorAll('.qx-bank-del').forEach(b => b.addEventListener('click', async () => {
+        const id = parseInt(b.getAttribute('data-id'), 10);
+        const rec = recs.find(x => x.id === id);
+        const isPassage = !!(rec && rec.post && rec.post.post_type === 'passage');
+        if (isPassage) {
+            const linked = recs.filter(x => String(x.passageId || '') === String(id));
+            if (!window.confirm(`Delete this passage AND its ${linked.length} linked question${linked.length === 1 ? '' : 's'} from the Question Bank? This cannot be undone.`)) return;
+            try {
+                await qxDbDelete(id);
+                for (const l of linked) await qxDbDelete(l.id);
+            } catch (e) {}
+        } else {
+            if (!window.confirm('Delete this question from the Question Bank? This cannot be undone.')) return;
+            try { await qxDbDelete(id); } catch (e) {}
+        }
+        qxRenderBank();
+    }));
+    lucide.createIcons();
+}
+
+// Language of a set of bank records → term language label + code.
+//   all English → English / 01EN;  all Hindi → Hindi / 01HI;
+//   any bilingual question, or a mix of EN and HI → Bilingual / 01ENHI.
+function qxLangTermInfo(recs) {
+    const kinds = new Set(recs.map(r =>
+        r.language === 'bilingual' ? 'bi' : (r.language === 'hi' ? 'hi' : 'en')));
+    if (kinds.has('bi') || (kinds.has('en') && kinds.has('hi'))) return { language: 'English & Hindi', code: '01ENHI' };
+    if (kinds.has('hi')) return { language: 'Hindi', code: '01HI' };
+    return { language: 'English', code: '01EN' };
+}
+
+function qxSlugify(name) {
+    return String(name || '').toLowerCase().trim()
+        .replace(/[^a-z0-9\u0900-\u097F]+/g, '-')
+        .replace(/^-+|-+$/g, '') || 'library';
+}
+
+async function qxExportBank() {
+    const libs = await qxLibEnsure();
+    const sel = qxLibSelection();
+    let recs = [];
+    try { recs = await qxDbAll(); } catch (e) {}
+    recs.forEach(r => { if (!r.library) r.library = QX_LIB_DEFAULT; });
+    const scoped = sel.view === 'all' ? recs : recs.filter(r => r.library === sel.view);
+    if (!scoped.length) { showToast('Nothing to export', sel.view === 'all' ? 'Save at least one question before exporting.' : 'This library is empty.', 'error'); return; }
+    scoped.sort((a, b) => (a.id || 0) - (b.id || 0));
+    const libName = sel.view === 'all' ? 'all' : ((libs.find(l => l.id === sel.view) || {}).name || 'library');
+    const slug = String(libName).toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '') || 'library';
+
+    // One term per library represented in the export: taxonomy & name are the
+    // library name; language/language_code derived from that library's
+    // questions (01EN / 01HI / 01ENHI). Posts reference their library term
+    // via taxonomies { "<Library Name>": ["<library-slug>"] }.
+    const libIds = [...new Set(scoped.map(r => r.library))];
+    const termByLib = {};
+    const terms = libIds.map(id => {
+        const name = (libs.find(l => l.id === id) || {}).name || 'General';
+        const info = qxLangTermInfo(scoped.filter(r => r.library === id));
+        const term = {
+            taxonomy: name,
+            language: info.language,
+            language_code: info.code,
+            name: name,
+            slug: qxSlugify(name),
+        };
+        termByLib[id] = term;
+        return term;
+    });
+
+    const data = {
+        version: '1.8.0',
+        export_type: 'question_bank',
+        library: sel.view === 'all' ? undefined : libName,
+        terms: terms,
+        posts: scoped.map(r => {
+            // Passage posts carry no taxonomy (standard shape: empty array);
+            // questions reference their library term.
+            if (r.post && r.post.post_type === 'passage') {
+                return Object.assign({}, r.post, { taxonomies: [] });
+            }
+            const t = termByLib[r.library];
+            return Object.assign({}, r.post, { taxonomies: { [t.taxonomy]: [t.slug] } });
+        }),
+    };
+    if (data.library === undefined) delete data.library;
+    downloadJSON(data, `question_bank_${slug}_${Date.now()}.json`);
+    const nPass = scoped.filter(r => r.post && r.post.post_type === 'passage').length;
+    const nQ = scoped.length - nPass;
+    showToast('Exported', `${nQ} question${nQ === 1 ? '' : 's'}${nPass ? ` + ${nPass} passage${nPass === 1 ? '' : 's'}` : ''} from ${sel.view === 'all' ? 'all libraries' : `"${libName}"`} — standard question JSON.`, 'success');
+}
+
+// ---------- boot / wiring ----------
+(function qxBoot() {
+    function wire() {
+        const pdfIn = document.getElementById('qx-pdf-file');
+        const imgIn = document.getElementById('qx-img-file');
+        if (!pdfIn) return;   // markup not present
+
+        pdfIn.addEventListener('change', e => {
+            const f = e.target.files[0];
+            if (!f) return;
+            if (f.type !== 'application/pdf') { showToast('Not a PDF', 'Choose a .pdf file.', 'error'); return; }
+            qxLoadPdfFile(f);
+            pdfIn.value = '';
+        });
+        imgIn.addEventListener('change', e => {
+            const f = e.target.files[0];
+            if (!f) return;
+            qxShowWorkspace();
+            qxRenderImage(f);
+            imgIn.value = '';
+        });
+
+        document.getElementById('qx-prev-page').addEventListener('click', () => {
+            if (qxState.pageNum > 1) { qxState.pageNum--; qxQueuePage(qxState.pageNum); }
+        });
+        document.getElementById('qx-next-page').addEventListener('click', () => {
+            const step = 1;
+            if (qxState.pdfDoc && qxState.pageNum < qxState.pdfDoc.numPages) {
+                qxState.pageNum = Math.min(qxState.pdfDoc.numPages, qxState.pageNum + step);
+                qxQueuePage(qxState.pageNum);
+            }
+        });
+        const qxContToggle = document.getElementById('qx-continuous');
+        if (qxContToggle) qxContToggle.addEventListener('change', () => {
+            qxState.continuous = !!qxContToggle.checked;
+            if (qxState.pdfDoc) qxQueuePage(qxState.pageNum);   // re-render current page in the new mode
+        });
+        document.getElementById('qx-zoom-in').addEventListener('click', () => { qxState.scale = Math.min(qxState.scale + 0.25, 6); qxApplyZoom(); });
+        document.getElementById('qx-zoom-out').addEventListener('click', () => { qxState.scale = Math.max(qxState.scale - 0.25, 0.25); qxApplyZoom(); });
+        document.getElementById('qx-zoom-reset').addEventListener('click', () => { qxState.scale = 1; qxApplyZoom(); });
+        document.getElementById('qx-change-file').addEventListener('click', () => {
+            if (qxState.cropper) { qxState.cropper.destroy(); qxState.cropper = null; }
+            qxState.pdfDoc = null; qxState.srcType = '';
+            if (qxState.crops.length) { qxState.crops = []; qxRenderCropQueue(); }
+            document.getElementById('qx-workspace').classList.add('hidden');
+            document.getElementById('qx-source-pick').classList.remove('hidden');
+        });
+
+        document.getElementById('qx-extract-btn').addEventListener('click', qxExtract);
+        const addCropBtn = document.getElementById('qx-add-crop-btn');
+        if (addCropBtn) addCropBtn.addEventListener('click', qxAddCrop);
+        const passageToggle = document.getElementById('qx-passage');
+        if (passageToggle) passageToggle.addEventListener('change', () => {
+            const label = document.getElementById('qx-extract-label');
+            if (label && !qxState.busy) label.textContent = qxExtractBtnLabel();
+        });
+        // "+ Hindi explanation" is meaningless when the whole output is already
+        // Hindi or bilingual — disable it in those modes so the intent is clear.
+        const langSel = document.getElementById('qx-lang');
+        const syncHiExpl = () => {
+            const box = document.getElementById('qx-hi-expl');
+            const wrap = document.getElementById('qx-hiexpl-wrap');
+            if (!box || !langSel) return;
+            const off = langSel.value === 'hi' || langSel.value === 'bilingual';
+            box.disabled = off;
+            if (wrap) {
+                wrap.classList.toggle('opacity-40', off);
+                wrap.classList.toggle('cursor-not-allowed', off);
+                wrap.title = off
+                    ? 'Not applicable: this output mode already produces a Hindi explanation.'
+                    : 'Keep the question and options in their own language, but write the explanation in Hindi (saved to the main _aimcq_explanation field).';
+            }
+        };
+        if (langSel) langSel.addEventListener('change', syncHiExpl);
+        syncHiExpl();
+        document.getElementById('qx-save-btn').addEventListener('click', qxSaveToBank);
+        document.getElementById('qx-discard-btn').addEventListener('click', () => {
+            qxState.result = null;
+            document.getElementById('qx-review').classList.add('hidden');
+        });
+        document.getElementById('qx-export-btn').addEventListener('click', qxExportBank);
+        document.getElementById('qx-clear-btn').addEventListener('click', async () => {
+            const sel = qxLibSelection();
+            let recs = await qxDbAll().catch(() => []);
+            recs.forEach(r => { if (!r.library) r.library = QX_LIB_DEFAULT; });
+            const scoped = sel.view === 'all' ? recs : recs.filter(r => r.library === sel.view);
+            if (!scoped.length) { showToast('Nothing to delete', 'This view has no questions.', 'info'); return; }
+            const libs = await qxLibEnsure();
+            const where = sel.view === 'all' ? 'the ENTIRE Question Bank (all libraries)' : `library "${(libs.find(l => l.id === sel.view) || {}).name || ''}"`;
+            if (!window.confirm(`Delete ALL ${scoped.length} question${scoped.length === 1 ? '' : 's'} from ${where}? This cannot be undone.`)) return;
+            try {
+                if (sel.view === 'all') await qxDbClear();
+                else await qxDbOp('readwrite', st => { scoped.forEach(r => st.delete(r.id)); });
+            } catch (e) {}
+            qxRenderBank();
+            showToast('Deleted', `${scoped.length} question${scoped.length === 1 ? '' : 's'} removed from ${sel.view === 'all' ? 'all libraries' : 'the library'}.`, 'info');
+        });
+
+        // Library controls
+        const libNew = document.getElementById('qx-lib-new');
+        if (libNew) libNew.addEventListener('click', qxLibCreate);
+        const libDel = document.getElementById('qx-lib-del');
+        if (libDel) libDel.addEventListener('click', qxLibDeleteCurrent);
+        const saveSel = document.getElementById('qx-save-lib');
+        if (saveSel) saveSel.addEventListener('change', () => {
+            const sel = qxLibSelection(); sel.save = saveSel.value; qxLibSaveSelection(sel);
+        });
+        const viewSel = document.getElementById('qx-lib-view');
+        if (viewSel) viewSel.addEventListener('change', () => {
+            const sel = qxLibSelection(); sel.view = viewSel.value; qxLibSaveSelection(sel);
+            qxRenderBank();
+        });
+
+        qxRenderBank();          // restore persisted bank on load
+    }
+    function qxQueuePageDef() {}
+    window.qxQueuePage = function (num) {
+        if (qxState.rendering) qxState.pendingPage = num;
+        else qxRenderPdfPage(num);
+    };
+    if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', wire);
+    else wire();
+    setTimeout(() => { try { if (!document.getElementById('qx-bank-list').__wired) qxRenderBank(); } catch (e) {} }, 900);
+})();
+
+// ============================================================
+// == EXTRACTOR API POOLS (Gemini + DeepSeek, key rotation) ===
+// ============================================================
+// The Question Extractor has its OWN API configuration with TWO
+// providers — Gemini and DeepSeek — switchable at any time. Each
+// provider keeps an independent POOL of keys (one per account).
+// Keys are tried in order; a quota/limit error deactivates that
+// key for 24 h (daily free-limit reset) and the call automatically
+// retries with the next active key, till the last key. Cooldowns
+// expire on their own (= the 24 h reset) or via Reactivate.
+//
+// DeepSeek's API cannot read images, so in DeepSeek mode the crop
+// is first transcribed by a Gemini key with a minimal plain-text
+// prompt (cheap), and DeepSeek then does the heavy structuring /
+// solving / explanation work on the transcription — keeping most
+// token usage on the DeepSeek side.
+
+const QX_POOL_LS_KEY = 'aimcq_qx_api_pools';
+const QX_POOL_LS_KEY_LEGACY = 'aimcq_qx_gemini_pool';
+const QX_LIMIT_COOLDOWN_MS = 24 * 60 * 60 * 1000;   // 24 hours
+
+const QX_PROVIDERS = {
+    gemini: {
+        label: 'Gemini',
+        models: [
+            ['gemini-2.5-flash', 'gemini-2.5-flash (recommended for free tier)'],
+            ['gemini-2.0-flash', 'gemini-2.0-flash'],
+            ['gemini-1.5-flash', 'gemini-1.5-flash'],
+            ['gemini-2.5-pro', 'gemini-2.5-pro (low free quota)'],
+            ['custom', 'Custom model id…'],
+        ],
+        defaultModel: 'gemini-2.5-flash',
+    },
+    deepseek: {
+        label: 'DeepSeek',
+        models: [
+            ['deepseek-v4-flash', 'deepseek-v4-flash (V4 — fast, recommended)'],
+            ['deepseek-v4-pro', 'deepseek-v4-pro (V4 — strongest reasoning)'],
+            ['deepseek-chat', 'deepseek-chat (V3)'],
+            ['deepseek-reasoner', 'deepseek-reasoner (R1 — slower)'],
+            ['custom', 'Custom model id…'],
+        ],
+        defaultModel: 'deepseek-v4-flash',
+    },
+};
+
+const QX_VISION_MODELS = [
+    ['gemma-4-31b-it', 'gemma-4-31b-it (Gemma vision — recommended, separate free quota from Gemini)'],
+    ['gemini-2.0-flash', 'gemini-2.0-flash'],
+    ['gemini-1.5-flash', 'gemini-1.5-flash'],
+    ['gemini-2.5-flash', 'gemini-2.5-flash'],
+    ['custom', 'Custom model id…'],
+];
+const QX_VISION_MODEL_DEFAULT = 'gemma-4-31b-it';
+
+let qxPools = {
+    provider: 'gemini',
+    visionModel: QX_VISION_MODEL_DEFAULT,   // shared image-reading model (Gemma by default)
+    gemini:   { model: 'gemini-2.5-flash', keys: [], split: true },
+    deepseek: { model: 'deepseek-v4-flash', keys: [] },
+};
+// key: { id, label, key, disabledUntil }  — disabledUntil: epoch ms (0 = active)
+
+function qxNormKeys(arr) {
+    return Array.isArray(arr) ? arr.filter(k => k && typeof k === 'object').map((k, i) => ({
+        id: k.id || ('k' + i + '-' + Date.now()),
+        label: k.label || `Key ${i + 1}`,
+        key: k.key || '',
+        disabledUntil: parseInt(k.disabledUntil, 10) || 0,
+    })) : [];
+}
+
+function qxPoolLoad() {
+    try {
+        const raw = localStorage.getItem(QX_POOL_LS_KEY);
+        if (raw) {
+            const p = JSON.parse(raw);
+            if (p && typeof p === 'object') {
+                qxPools.provider = (p.provider === 'deepseek') ? 'deepseek' : 'gemini';
+                ['gemini', 'deepseek'].forEach(pr => {
+                    const src = p[pr] || {};
+                    qxPools[pr].model = src.model || QX_PROVIDERS[pr].defaultModel;
+                    qxPools[pr].keys = qxNormKeys(src.keys);
+                });
+                // Shared vision model (migrates the old deepseek.visionModel slot).
+                qxPools.visionModel = p.visionModel
+                    || (p.deepseek && p.deepseek.visionModel)
+                    || QX_VISION_MODEL_DEFAULT;
+                // Gemini split pipeline (Gemma vision → Gemini text generation).
+                qxPools.gemini.split = (p.gemini && typeof p.gemini.split === 'boolean') ? p.gemini.split : true;
+            }
+        } else {
+            // Migrate the old single-provider (Gemini) pool if present.
+            const legacy = localStorage.getItem(QX_POOL_LS_KEY_LEGACY);
+            if (legacy) {
+                const lp = JSON.parse(legacy);
+                if (lp && typeof lp === 'object') {
+                    qxPools.gemini.model = lp.model || QX_PROVIDERS.gemini.defaultModel;
+                    qxPools.gemini.keys = qxNormKeys(lp.keys);
+                    qxPoolPersist();
+                }
+            }
+        }
+    } catch (e) {}
+    qxPoolRenderKeys();
+    qxPoolUpdateChip();
+}
+
+function qxPoolPersist() {
+    try { localStorage.setItem(QX_POOL_LS_KEY, JSON.stringify(qxPools)); } catch (e) {}
+}
+
+function qxActivePool() { return qxPools[qxPools.provider]; }
+function qxKeyActive(k) { return !!(k && k.key && (!k.disabledUntil || k.disabledUntil <= Date.now())); }
+function qxPoolActiveKeys(provider) { return qxPools[provider || qxPools.provider].keys.filter(qxKeyActive); }
+function qxPoolConfiguredKeys(provider) { return qxPools[provider || qxPools.provider].keys.filter(k => k.key); }
+
+function qxFmtCooldown(until) {
+    const ms = until - Date.now();
+    if (ms <= 0) return 'now';
+    const h = Math.floor(ms / 3600000), m = Math.ceil((ms % 3600000) / 60000);
+    return (h ? `${h}h ` : '') + `${m}m`;
+}
+
+// ---------- settings card UI ----------
+function qxToggleApiSettings() {
+    const body = document.getElementById('qx-api-body');
+    const chev = document.getElementById('qx-api-chevron');
+    if (!body) return;
+    const nowHidden = body.classList.toggle('hidden');
+    if (chev) chev.style.transform = nowHidden ? '' : 'rotate(180deg)';
+    if (!nowHidden) qxPoolRenderKeys();
+    try { lucide.createIcons(); } catch (e) {}
+}
+
+function qxSetProvider(p) {
+    if (!QX_PROVIDERS[p]) return;
+    qxPools.provider = p;
+    qxPoolPersist();
+    qxPoolRenderKeys();
+    qxPoolUpdateChip();
+}
+
+function qxPoolUpdateChip() {
+    const chip = document.getElementById('qx-ai-status');
+    if (!chip) return;
+    const prName = QX_PROVIDERS[qxPools.provider].label;
+    const total = qxPoolConfiguredKeys().length;
+    const active = qxPoolActiveKeys().length;
+    let text, on;
+    if (!total) { text = `${prName} · not configured`; on = false; }
+    else if (!active) { text = `${prName} · all ${total} keys limit-hit — auto-resets in 24h`; on = false; }
+    else {
+        const modelInfo = (qxPools.provider === 'gemini' && qxPools.gemini.split)
+            ? `${qxPools.visionModel} → ${qxActivePool().model}`
+            : qxActivePool().model;
+        text = `${prName} · ${active}/${total} keys active · ${modelInfo}`;
+        on = true;
+    }
+    chip.textContent = text;
+    chip.classList.toggle('on', on);
+    chip.classList.toggle('off', !on);
+}
+
+function qxPoolRenderKeys() {
+    const list = document.getElementById('qx-keys-list');
+    if (!list) return;
+    const provider = qxPools.provider;
+    const pool = qxActivePool();
+
+    // Provider switch state
+    const sw = document.getElementById('qx-provider-switch');
+    if (sw) sw.querySelectorAll('button').forEach(b =>
+        b.classList.toggle('active', b.getAttribute('data-provider') === provider));
+
+    // Model options for the active provider
+    const modelSel = document.getElementById('qx-model');
+    const modelCustom = document.getElementById('qx-model-custom');
+    if (modelSel) {
+        modelSel.innerHTML = QX_PROVIDERS[provider].models
+            .map(([v, l]) => `<option value="${v}">${l}</option>`).join('');
+        const knownModel = QX_PROVIDERS[provider].models.some(m => m[0] === pool.model && m[0] !== 'custom');
+        modelSel.value = knownModel ? pool.model : 'custom';
+        if (modelCustom) {
+            modelCustom.classList.toggle('hidden', knownModel);
+            modelCustom.value = knownModel ? '' : (pool.model || '');
+        }
+    }
+
+    // DeepSeek pipeline note, Gemini split toggle, shared vision-model row
+    const dsNote = document.getElementById('qx-deepseek-note');
+    if (dsNote) dsNote.classList.toggle('hidden', provider !== 'deepseek');
+    const splitRow = document.getElementById('qx-gemini-split-row');
+    const splitBox = document.getElementById('qx-gemini-split');
+    if (splitRow) splitRow.classList.toggle('hidden', provider !== 'gemini');
+    if (splitBox) splitBox.checked = !!qxPools.gemini.split;
+    const visRow = document.getElementById('qx-vision-row');
+    const showVision = provider === 'deepseek' || (provider === 'gemini' && qxPools.gemini.split);
+    if (visRow) visRow.classList.toggle('hidden', !showVision);
+    const visSel = document.getElementById('qx-vision-model');
+    const visCustom = document.getElementById('qx-vision-model-custom');
+    if (visSel) {
+        visSel.innerHTML = QX_VISION_MODELS.map(([v, l]) => `<option value="${v}">${l}</option>`).join('');
+        const vm = qxPools.visionModel || QX_VISION_MODEL_DEFAULT;
+        const known = QX_VISION_MODELS.some(m => m[0] === vm);
+        visSel.value = known ? vm : 'custom';
+        if (visCustom) {
+            visCustom.classList.toggle('hidden', known);
+            visCustom.value = known ? '' : vm;
+        }
+    }
+
+    if (!pool.keys.length) {
+        list.innerHTML = `<p class="text-xs text-gray-400 py-1">No ${QX_PROVIDERS[provider].label} keys yet — click <b>Add API key</b> to add your first key.</p>`;
+        return;
+    }
+    list.innerHTML = pool.keys.map((k, i) => {
+        const active = qxKeyActive(k);
+        const limited = k.key && !active;
+        return `
+        <div class="qx-key-row ${limited ? 'limited' : ''}" data-id="${k.id}">
+            <span class="qx-key-order">${i + 1}</span>
+            <input type="text" class="qx-key-label" data-field="label" value="${qxEsc(k.label)}" placeholder="Account name">
+            <input type="password" class="qx-key-input" data-field="key" value="${qxEsc(k.key)}" placeholder="${provider === 'deepseek' ? 'sk-...' : 'AIza...'}" autocomplete="off">
+            <span class="qx-key-status ${limited ? 'bad' : (k.key ? 'ok' : '')}">${
+                !k.key ? 'empty'
+                : limited ? `limit hit · resets in ${qxFmtCooldown(k.disabledUntil)}`
+                : 'active'}</span>
+            ${limited ? `<button type="button" class="qx-key-btn qx-key-react" data-id="${k.id}" title="Mark active again now"><i data-lucide="rotate-ccw" class="w-3.5 h-3.5"></i></button>` : ''}
+            ${k.key ? `<button type="button" class="qx-key-btn qx-key-test" data-id="${k.id}" title="Test this key with a tiny request"><i data-lucide="plug-zap" class="w-3.5 h-3.5"></i></button>` : ''}
+            <button type="button" class="qx-key-btn qx-key-del" data-id="${k.id}" title="Remove this key"><i data-lucide="trash-2" class="w-3.5 h-3.5"></i></button>
+        </div>`;
+    }).join('');
+
+    list.querySelectorAll('.qx-key-row input').forEach(inp => {
+        inp.addEventListener('input', () => {
+            const row = inp.closest('.qx-key-row');
+            const k = pool.keys.find(x => x.id === row.getAttribute('data-id'));
+            if (!k) return;
+            const field = inp.getAttribute('data-field');
+            k[field] = field === 'key' ? aiSanitizeKey(inp.value) : inp.value.trim();
+        });
+    });
+    list.querySelectorAll('.qx-key-del').forEach(b => b.addEventListener('click', () => {
+        pool.keys = pool.keys.filter(x => x.id !== b.getAttribute('data-id'));
+        qxPoolPersist();
+        qxPoolRenderKeys();
+        qxPoolUpdateChip();
+    }));
+    list.querySelectorAll('.qx-key-react').forEach(b => b.addEventListener('click', () => {
+        const k = pool.keys.find(x => x.id === b.getAttribute('data-id'));
+        if (k) { k.disabledUntil = 0; qxPoolPersist(); qxPoolRenderKeys(); qxPoolUpdateChip(); }
+    }));
+    list.querySelectorAll('.qx-key-test').forEach(b => b.addEventListener('click', () => {
+        qxPoolTestKey(b.getAttribute('data-id'), b);
+    }));
+    lucide.createIcons();
+}
+
+function qxPoolAddKey() {
+    const pool = qxActivePool();
+    pool.keys.push({
+        id: 'k' + Date.now() + '-' + Math.floor(Math.random() * 1e5),
+        label: `Account ${pool.keys.length + 1}`,
+        key: '',
+        disabledUntil: 0,
+    });
+    qxPoolRenderKeys();
+}
+
+function qxPoolSave() {
+    const modelSel = document.getElementById('qx-model');
+    const modelCustom = document.getElementById('qx-model-custom');
+    const pool = qxActivePool();
+    if (modelSel && modelSel.value) {
+        pool.model = modelSel.value === 'custom'
+            ? (modelCustom && modelCustom.value.trim()) || QX_PROVIDERS[qxPools.provider].defaultModel
+            : modelSel.value;
+    }
+    const visSel = document.getElementById('qx-vision-model');
+    const visCustom = document.getElementById('qx-vision-model-custom');
+    if (visSel) {
+        qxPools.visionModel = visSel.value === 'custom'
+            ? (visCustom && visCustom.value.trim()) || QX_VISION_MODEL_DEFAULT
+            : visSel.value;
+    }
+    const splitBox = document.getElementById('qx-gemini-split');
+    if (splitBox) qxPools.gemini.split = !!splitBox.checked;
+    pool.keys = pool.keys.filter(k => k.key || k.label);
+    qxPoolPersist();
+    qxPoolRenderKeys();
+    qxPoolUpdateChip();
+    const n = qxPoolConfiguredKeys().length;
+    const prName = QX_PROVIDERS[qxPools.provider].label;
+    showToast('Extractor API pool saved',
+        n ? `${prName}: ${n} key${n === 1 ? '' : 's'} · model ${pool.model}. Keys rotate automatically on limit.`
+          : `${prName} pool saved, but no usable keys yet — paste at least one API key.`,
+        n ? 'success' : 'info');
+}
+
+function qxPoolResetLimits() {
+    qxActivePool().keys.forEach(k => { k.disabledUntil = 0; });
+    qxPoolPersist();
+    qxPoolRenderKeys();
+    qxPoolUpdateChip();
+    showToast('Limits reset', `All ${QX_PROVIDERS[qxPools.provider].label} keys marked active again.`, 'success');
+}
+
+function qxPoolMarkLimited(k) {
+    k.disabledUntil = Date.now() + QX_LIMIT_COOLDOWN_MS;
+    qxPoolPersist();
+    qxPoolRenderKeys();
+    qxPoolUpdateChip();
+}
+
+function qxIsLimitError(err) {
+    if (!err) return false;
+    if (err.status === 429) return true;
+    if (err.status === 402) return true;   // DeepSeek: insufficient balance
+    return /RESOURCE_EXHAUSTED|quota|rate limit|insufficient balance/i.test(err.message || '');
+}
+
+// ---------- DeepSeek transport (OpenAI-compatible) ----------
+async function aiDeepseekRequest(prompt, opts) {
+    opts = opts || {};
+    const resp = await fetch('https://api.deepseek.com/chat/completions', {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            'Authorization': 'Bearer ' + (opts.key || ''),
+        },
+        body: JSON.stringify({
+            model: opts.model || 'deepseek-v4-flash',
+            messages: [{ role: 'user', content: prompt }],
+            temperature: opts.plainText ? 0 : 0.2,
+            ...(opts.plainText ? {} : { response_format: { type: 'json_object' } }),
+        }),
+    });
+    if (!resp.ok) {
+        let detail = '';
+        try { const j = await resp.json(); detail = (j.error && j.error.message) || ''; } catch (e) {}
+        const err = new Error(detail || `HTTP ${resp.status}`);
+        err.status = resp.status;
+        throw err;
+    }
+    const data = await resp.json();
+    const text = data.choices && data.choices[0] && data.choices[0].message && data.choices[0].message.content;
+    if (!text) throw new Error('Empty response from DeepSeek');
+    return text;
+}
+
+// ---------- failover call within a provider's pool ----------
+async function qxAiCall(prompt, opts, provider) {
+    provider = provider || qxPools.provider;
+    const prName = QX_PROVIDERS[provider].label;
+    const pool = qxPools[provider];
+    const candidates = pool.keys.filter(qxKeyActive);
+    if (!candidates.length) {
+        const configured = pool.keys.filter(k => k.key);
+        if (!configured.length) {
+            throw new Error(`No ${prName} keys configured in the Extractor API Settings.`);
+        }
+        const soonest = Math.min(...configured.map(k => k.disabledUntil || 0));
+        throw new Error(`All ${configured.length} ${prName} keys have hit their limits. They re-activate automatically — earliest in ${qxFmtCooldown(soonest)} (or use "Reset all limits"${provider !== qxPools.provider ? '' : ', or switch provider'}).`);
+    }
+    for (const k of candidates) {
+        try {
+            const useModel = opts.modelOverride || pool.model;
+            const text = provider === 'deepseek'
+                ? await aiDeepseekRequest(prompt, Object.assign({}, opts, { key: k.key, model: useModel }))
+                : await aiGeminiRequest(prompt, Object.assign({}, opts, { key: k.key, model: useModel }));
+            return { text, keyUsed: k, provider };
+        } catch (err) {
+            if (qxIsLimitError(err)) {
+                qxPoolMarkLimited(k);
+                showToast('API limit hit — switching key',
+                    `${prName} key "${k.label}" hit its limit and is deactivated for 24h. Trying the next key…`, 'info');
+                continue;
+            }
+            throw err;
+        }
+    }
+    throw new Error(`All ${prName} keys hit their limits during this call. They re-activate automatically after 24h (or use "Reset all limits").`);
+}
+
+// ---------- extraction pipeline (provider-aware) ----------
+// Gemini: single multimodal call (image + full prompt).
+// DeepSeek: (1) minimal Gemini transcription of the crop, (2) DeepSeek
+// receives the transcription and does structuring/solving/explanation.
+const QX_TRANSCRIBE_PROMPT =
+    'Transcribe ALL text visible in this image EXACTLY, in correct reading order. ' +
+    'CRITICAL — do NOT copy the image\'s visual word-wrap: if a sentence merely wraps to the next visual line because of column/page width, join the wrapped words back into ONE continuous line with a single space — do NOT start a new line there. ' +
+    'Only start a new line for a GENUINE logical break: a new labeled statement/point (A./B./I./II./1./2. etc.), a clearly separate sentence/point by the author\'s intent, or a real paragraph break. When unsure whether a break is logical or just visual wrapping, join the text into one continuous line instead of breaking it. ' +
+    'Write mathematical content as LaTeX between $...$ delimiters — and ALL superscripts, subscripts and degree symbols, in math AND non-math text alike, as LaTeX too: powers $x^2$/$10^{-3}$, units $m^2$/$km^2$, chemical formulas $H_2O$/$CO_2$/$SO_4^{2-}$, ions $Na^+$, isotopes $^{235}U$, degrees/temperatures/coordinates $45^\\circ$/$30^\\circ C$/$23.5^\\circ N$, indexed terms $a_n$. Multi-character scripts need braces ($10^{-3}$). Never output raw Unicode script/degree characters (\u00b2 \u2082 \u00b0 etc.) or <sub>/<sup> tags — convert them to LaTeX. ' +
+    'If a diagram/figure/graph appears, write [image here: <very short description>] at its position. ' +
+    'If the image contains a TABLE, matched lists (List-I / List-II, Column A / Column B, "Match the following"), or any tabular/grid data, transcribe it as a Markdown table (rows with | pipes and a header separator) so its row/column structure is preserved — keep each list item together with its own label in one cell (e.g. "A. Kudankulam" in one cell, "1. Karnataka" in the next), and do NOT split the A./B. or 1./2. markers into separate columns. ' +
+    'IGNORE any marks that are NOT part of the printed question: ticks/check marks (\u2713), crosses (\u2717/\u00d7), circles, underlines, arrows, highlighter, and ANY handwriting or hand-drawn scribbles/annotations overlaid on the page — do NOT transcribe or describe them. Transcribe only the original printed text and figures. ' +
+    'Keep the question stem and the answer options clearly separated (transcribe the stem, then the options in order); do not merge option text into the stem. ' +
+    'Include a printed/typeset answer key if present (e.g. a typeset "Answer (1)" line), but NOT hand-drawn ticks/crosses/circles/scribbles. Output ONLY the raw transcription — no commentary.';
+
+async function qxGeminiTranscribe(images) {
+    const visionModel = qxPools.visionModel || QX_VISION_MODEL_DEFAULT;
+    // `images` may be a single base64 string or an array of them. When more
+    // than one crop is supplied (a question that continues onto another page,
+    // or the same question in a second language), each crop is transcribed on
+    // its own and the pieces are joined so the structuring step sees the whole
+    // question as one continuous input.
+    const list = Array.isArray(images) ? images.filter(Boolean) : [images].filter(Boolean);
+    if (!list.length) throw new Error('No crop to transcribe.');
+
+    const transcribeOne = async (b64) => {
+        // Prefer the extractor's Gemini pool (with failover); fall back to the
+        // Question Editor's Gemini key if the pool is empty. Always uses the
+        // dedicated vision model (default: gemma-4-31b-it) — independent of
+        // whichever Gemini model is selected for direct Gemini-mode extraction,
+        // so it draws on its own free-tier quota.
+        if (qxPoolConfiguredKeys('gemini').length) {
+            const call = await qxAiCall(QX_TRANSCRIBE_PROMPT,
+                { imageB64: b64, imageMime: 'image/webp', plainText: true, modelOverride: visionModel }, 'gemini');
+            return call.text;
+        }
+        if (typeof aiConfigured === 'function' && aiConfigured()) {
+            return aiGeminiRequest(QX_TRANSCRIBE_PROMPT,
+                { imageB64: b64, imageMime: 'image/webp', plainText: true, model: visionModel });
+        }
+        throw new Error('DeepSeek mode needs a Gemini-API key for reading the image (DeepSeek has no image input). Add a Gemini key to the extractor pool, or configure the Question Editor\'s AI settings.');
+    };
+
+    if (list.length === 1) return transcribeOne(list[0]);
+
+    const parts = [];
+    for (let i = 0; i < list.length; i++) {
+        const t = await transcribeOne(list[i]);
+        parts.push(`--- Crop ${i + 1} of ${list.length} ---\n${(t || '').trim()}`);
+    }
+    // The pieces belong together — flag that for the structuring step.
+    return 'The following transcription comes from MULTIPLE crops of the SAME item (a single question, or a passage group with its questions, continuing across crops/pages — possibly repeated in another language). Treat all crops together as one continuous source.\n\n' + parts.join('\n\n');
+}
+
+async function qxRunExtraction(buildPrompt, langMode, images, wantSteps, detailLevel, wantHiExpl) {
+    const label = document.getElementById('qx-extract-label');
+    // `images` may be a single base64 string or an array (multi-crop question).
+    const imgList = Array.isArray(images) ? images.filter(Boolean) : [images].filter(Boolean);
+    const multi = imgList.length > 1;
+    const emptyMsg = multi
+        ? 'Image transcription came back empty — try tighter, clearer crops.'
+        : 'Image transcription came back empty — try a tighter, clearer crop.';
+    const readLabel = (m) => multi ? `Reading ${imgList.length} crops (${m})…` : `Reading image (${m})…`;
+
+    if (qxPools.provider === 'deepseek') {
+        if (label) label.textContent = readLabel(qxPools.visionModel || 'vision model');
+        const transcript = await qxGeminiTranscribe(imgList);
+        if (!transcript || !transcript.trim()) throw new Error(emptyMsg);
+        if (label) label.textContent = 'Structuring with DeepSeek…';
+        return qxAiCall(buildPrompt(langMode, transcript.trim(), wantSteps, detailLevel, wantHiExpl), {}, 'deepseek');
+    }
+    // Gemini provider — split pipeline saves the generation model's vision
+    // quota: cheap vision model (Gemma) reads the image, then the selected
+    // Gemini model runs TEXT-ONLY for the actual question generation.
+    if (qxPools.gemini.split) {
+        try {
+            if (label) label.textContent = readLabel(qxPools.visionModel);
+            const transcript = await qxGeminiTranscribe(imgList);
+            if (!transcript || !transcript.trim()) throw new Error(emptyMsg);
+            if (label) label.textContent = `Generating (${qxPools.gemini.model})…`;
+            return await qxAiCall(buildPrompt(langMode, transcript.trim(), wantSteps, detailLevel, wantHiExpl), {}, 'gemini');
+        } catch (err) {
+            // Vision model missing/unavailable → fall back to the direct
+            // multimodal call so extraction still works.
+            if (err && (err.status === 404 || /not found|is not supported|does not support/i.test(err.message || ''))) {
+                showToast('Vision model unavailable — using direct call',
+                    `"${qxPools.visionModel}" was rejected by the API (${err.message || 'not found'}). Falling back to a single multimodal ${qxPools.gemini.model} call. Fix the vision model id in the Extractor API Settings.`,
+                    'info');
+                if (label) label.textContent = 'Extracting with AI…';
+                return qxAiCall(qxWithMultiHint(buildPrompt, langMode, wantSteps, detailLevel, multi, wantHiExpl), qxImgOpts(imgList), 'gemini');
+            }
+            throw err;
+        }
+    }
+    return qxAiCall(qxWithMultiHint(buildPrompt, langMode, wantSteps, detailLevel, multi, wantHiExpl), qxImgOpts(imgList), 'gemini');
+}
+
+// Build the image opts for a direct multimodal Gemini call from 1..N crops.
+function qxImgOpts(imgList) {
+    return imgList.length > 1
+        ? { imagesB64: imgList, imageMime: 'image/webp' }
+        : { imageB64: imgList[0], imageMime: 'image/webp' };
+}
+
+// For direct (non-split) multimodal calls there is no transcript to carry the
+// "these crops belong together" hint, so prepend it to the prompt instead.
+function qxWithMultiHint(buildPrompt, langMode, wantSteps, detailLevel, multi, wantHiExpl) {
+    const base = buildPrompt(langMode, undefined, wantSteps, detailLevel, wantHiExpl);
+    if (!multi) return base;
+    const hint = (buildPrompt === qxBuildPassagePrompt)
+        ? 'NOTE: You are given MULTIPLE images that are all crops of the SAME reading-comprehension group — together they contain the directions, the passage, and ALL its questions (continued across pages/columns). Combine ALL images into ONE passage group.\n\n'
+        : 'NOTE: You are given MULTIPLE images that are all crops of the SAME single question — it continues across the images (e.g. the question or its options continue on the next page, or the same question appears in another language). Combine ALL images into ONE question.\n\n';
+    return hint + base;
+}
+
+(function qxPoolBoot() {
+    function init() { qxPoolLoad(); }
+    if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', init);
+    else init();
+    setTimeout(function () { try { qxPoolLoad(); } catch (e) {} }, 850);
+    setInterval(function () {
+        try {
+            qxPoolUpdateChip();
+            const body = document.getElementById('qx-api-body');
+            if (body && !body.classList.contains('hidden')) qxPoolRenderKeys();
+        } catch (e) {}
+    }, 60000);
+})();
+
+// Test one pool key with a tiny request and show the PRECISE result —
+// so a bad key (restrictions, disabled API, typo) is easy to diagnose.
+async function qxPoolTestKey(id, btn) {
+    const pool = qxActivePool();
+    const k = pool.keys.find(x => x.id === id);
+    if (!k || !k.key) return;
+    const row = btn && btn.closest('.qx-key-row');
+    const statusEl = row && row.querySelector('.qx-key-status');
+    const prev = statusEl ? statusEl.textContent : '';
+    if (statusEl) { statusEl.textContent = 'testing…'; statusEl.className = 'qx-key-status'; }
+    try {
+        const opts = { key: k.key, model: pool.model, plainText: true };
+        const out = qxPools.provider === 'deepseek'
+            ? await aiDeepseekRequest('Reply with exactly: OK', opts)
+            : await aiGeminiRequest('Reply with exactly: OK', opts);
+        if (statusEl) { statusEl.textContent = /OK/i.test(out || '') ? '✓ works' : '✓ reachable'; statusEl.className = 'qx-key-status ok'; }
+        showToast('Key OK', `"${k.label}" works with ${pool.model}.`, 'success');
+    } catch (err) {
+        if (statusEl) { statusEl.textContent = '✗ failed'; statusEl.className = 'qx-key-status bad'; }
+        showToast(`Key "${k.label}" failed`, aiFriendlyError(err), 'error');
+    }
+    setTimeout(() => { try { qxPoolRenderKeys(); } catch (e) {} }, 4000);
+}
+
+// ============================================================
+// == AI FIGURE GENERATION (Figure Updater tab — optional) ====
+// ============================================================
+// Lives entirely in the Figure Updater tab. When the "AI figure generator"
+// toggle is on, the Quick Crop & Upload action first sends the crop to an
+// image-OUTPUT Gemini model (default gemini-3.1-flash-lite-image) that
+// reproduces ONLY the figure (graph / circuit / table / diagram) as a
+// clean standalone image, then uploads THAT to GitHub → jsDelivr like any
+// other crop. Off = the crop itself is uploaded unchanged. Fully manual:
+// the user crops the figure region and clicks Crop & Upload.
+
+const FIG_AI_MODELS = [
+    ['gemini-3.1-flash-lite-image', 'gemini-3.1-flash-lite-image (recommended)'],
+    ['custom', 'Custom image model id…'],
+];
+const FIG_AI_MODEL_DEFAULT = 'gemini-3.1-flash-lite-image';
+const FIG_AI_MODEL_KEY = 'aimcq_fig_ai_model';
+let figAiModel = FIG_AI_MODEL_DEFAULT;
+
+const FIG_AI_PROMPT =
+    'The attached image is a cropped exam question that contains a figure (diagram, graph, circuit, table, or illustration). ' +
+    'Generate an image that reproduces ONLY that figure as a clean standalone image on a plain white background. ' +
+    'EXCLUDE everything that is not part of the figure itself: the question text, question number, option labels and option text, printed answer markings, and any watermarks or logos. ' +
+    'Reproduce the figure faithfully and completely — same axes and axis labels, curve shapes, circuit components and their values, arrows, table rows/columns, and any text or numbers that belong INSIDE the figure. ' +
+    'Do not add titles, captions, borders, or decorations of your own. ' +
+    'If several separate figures are present, reproduce the main figure that the question body refers to.';
+
+// Gemini request variant that accepts image parts in the RESPONSE.
+async function figAiGeminiImageRequest(prompt, opts) {
+    opts = opts || {};
+    const key = aiSanitizeKey(opts.key || '');
+    const model = opts.model || FIG_AI_MODEL_DEFAULT;
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`;
+    const userParts = [];
+    if (opts.imageB64) userParts.push({ inline_data: { mime_type: opts.imageMime || 'image/webp', data: opts.imageB64 } });
+    userParts.push({ text: prompt });
+    const resp = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'x-goog-api-key': key },
+        body: JSON.stringify({
+            contents: [{ role: 'user', parts: userParts }],
+            generationConfig: { responseModalities: ['TEXT', 'IMAGE'], temperature: 0.1 },
+        }),
+    });
+    if (!resp.ok) {
+        let detail = '', reason = '';
+        try {
+            const j = await resp.json();
+            if (j.error) {
+                detail = j.error.message || '';
+                (j.error.details || []).forEach(d => { if (d && d.reason && !reason) reason = d.reason; });
+                reason = reason || j.error.status || '';
+            }
+        } catch (e) {}
+        const err = new Error(detail || `HTTP ${resp.status}`);
+        err.status = resp.status; err.reason = reason;
+        throw err;
+    }
+    const data = await resp.json();
+    const parts = (data.candidates && data.candidates[0] && data.candidates[0].content &&
+        data.candidates[0].content.parts) || [];
+    const images = []; let text = '';
+    parts.forEach(p => {
+        const inl = p.inlineData || p.inline_data;
+        if (inl && inl.data) images.push({ mime: inl.mimeType || inl.mime_type || 'image/png', data: inl.data });
+        if (p.text) text += p.text;
+    });
+    return { images, text };
+}
+
+// Collect usable Gemini keys: the Question Extractor pool first (with
+// limit rotation), then the Question Editor's key as a fallback.
+function figAiGeminiKeys() {
+    const keys = [];
+    try {
+        if (typeof qxPools !== 'undefined' && qxPools.gemini && qxPools.gemini.keys) {
+            qxPools.gemini.keys.filter(k => typeof qxKeyActive === 'function' ? qxKeyActive(k) : k.key)
+                .forEach(k => keys.push(k));
+        }
+    } catch (e) {}
+    return keys;
+}
+
+async function figGenerateFigureImage(imageB64) {
+    const model = figAiModel || FIG_AI_MODEL_DEFAULT;
+    const opts = { imageB64, imageMime: 'image/webp', model };
+    const poolKeys = figAiGeminiKeys();
+    if (poolKeys.length) {
+        for (const k of poolKeys) {
+            try {
+                const out = await figAiGeminiImageRequest(FIG_AI_PROMPT, Object.assign({}, opts, { key: k.key }));
+                if (!out.images.length) throw new Error('The image model returned no image' + (out.text ? ' — it said: ' + out.text.slice(0, 160) : '.'));
+                return out.images[0];
+            } catch (err) {
+                if (typeof qxIsLimitError === 'function' && qxIsLimitError(err)) {
+                    if (typeof qxPoolMarkLimited === 'function') qxPoolMarkLimited(k);
+                    showToast('API limit hit — switching key', `Gemini key "${k.label}" hit its limit (figure model). Trying the next key…`, 'info');
+                    continue;
+                }
+                throw new Error(typeof aiFriendlyError === 'function' ? aiFriendlyError(err) : (err.message || String(err)));
+            }
+        }
+        throw new Error('All Gemini keys hit their limits during figure generation.');
+    }
+    // Fallback: Question Editor key
+    let editorKey = '';
+    try { if (typeof aiCfg !== 'undefined') editorKey = aiCfg.key || ''; } catch (e) {}
+    if (editorKey) {
+        try {
+            const out = await figAiGeminiImageRequest(FIG_AI_PROMPT, Object.assign({}, opts, { key: editorKey }));
+            if (!out.images.length) throw new Error('The image model returned no image' + (out.text ? ' — it said: ' + out.text.slice(0, 160) : '.'));
+            return out.images[0];
+        } catch (err) {
+            throw new Error(typeof aiFriendlyError === 'function' ? aiFriendlyError(err) : (err.message || String(err)));
+        }
+    }
+    throw new Error('AI figure generation needs a Gemini API key. Add one to the Question Extractor key pool, or configure the Question Editor AI settings.');
+}
+
+function figB64ToBlob(b64, mime) {
+    const bin = atob(b64);
+    const arr = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i);
+    return new Blob([arr], { type: mime || 'image/png' });
+}
+
+// AI figure model settings UI (in the Quick Crop & Upload box).
+function figAiRenderModel() {
+    const sel = document.getElementById('fig-ai-model');
+    const custom = document.getElementById('fig-ai-model-custom');
+    if (sel) {
+        sel.innerHTML = FIG_AI_MODELS.map(([v, l]) => `<option value="${v}">${l}</option>`).join('');
+        const known = FIG_AI_MODELS.some(m => m[0] === figAiModel && m[0] !== 'custom');
+        sel.value = known ? figAiModel : 'custom';
+        if (custom) { custom.classList.toggle('hidden', known); custom.value = known ? '' : figAiModel; }
+    }
+}
+function figAiSaveModel() {
+    const sel = document.getElementById('fig-ai-model');
+    const custom = document.getElementById('fig-ai-model-custom');
+    if (!sel) return;
+    figAiModel = sel.value === 'custom'
+        ? (custom && custom.value.trim()) || FIG_AI_MODEL_DEFAULT
+        : sel.value;
+    try { localStorage.setItem(FIG_AI_MODEL_KEY, figAiModel); } catch (e) {}
+}
+(function figAiBoot() {
+    function init() {
+        try { const v = localStorage.getItem(FIG_AI_MODEL_KEY); if (v) figAiModel = v; } catch (e) {}
+        const toggle = document.getElementById('fig-ai-gen');
+        const row = document.getElementById('fig-ai-model-row');
+        const label = document.getElementById('fig-quick-upload-label');
+        figAiRenderModel();
+        if (toggle) toggle.addEventListener('change', () => {
+            if (row) row.classList.toggle('hidden', !toggle.checked);
+            if (label) label.textContent = toggle.checked ? 'Generate Figure & Upload' : 'Crop & Upload';
+        });
+        const sel = document.getElementById('fig-ai-model');
+        const custom = document.getElementById('fig-ai-model-custom');
+        if (sel) sel.addEventListener('change', () => {
+            if (custom) custom.classList.toggle('hidden', sel.value !== 'custom');
+            figAiSaveModel();
+        });
+        if (custom) custom.addEventListener('input', figAiSaveModel);
+    }
+    if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', init);
+    else init();
+    setTimeout(init, 850);
+})();
