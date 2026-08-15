@@ -7,7 +7,7 @@
  *
  *  Embed on any page:
  *      <div class="mcqs-page-wrap">
- *        <div id="mcqs-host" data-height="100vh"></div>
+ *        <div id="mcqs-host" data-height="auto"></div>
  *      </div>
  *      <script src="https://cdn.jsdelivr.net/gh/USER/REPO@VERSION/mcqs-tool.js"></script>
  *
@@ -62,6 +62,9 @@
         </button>
         <button id="tab-btn-figures" class="flex-1 py-4 text-center tab-inactive transition-colors flex items-center justify-center gap-2 whitespace-nowrap px-3" onclick="switchTab('figures')">
             <i data-lucide="image-plus" class="w-4 h-4"></i> Figure Updater
+        </button>
+        <button id="tab-btn-extractor" class="flex-1 py-4 text-center tab-inactive transition-colors flex items-center justify-center gap-2 whitespace-nowrap px-3" onclick="switchTab('extractor')">
+            <i data-lucide="scan-text" class="w-4 h-4"></i> Question Extractor
         </button>
         <button id="tab-btn-builder" class="flex-1 py-4 text-center tab-inactive transition-colors flex items-center justify-center gap-2 whitespace-nowrap px-3" onclick="switchTab('builder')">
             <i data-lucide="layout-template" class="w-4 h-4"></i> Frontend Builder
@@ -142,19 +145,6 @@
 
         <!-- ==================== QUIZ BUILDER TAB ==================== -->
         <div id="tab-quizbuilder" class="hidden space-y-5">
-
-            <!-- Intro -->
-            <div class="bg-teal-50 border border-teal-100 rounded-xl p-4 flex items-start gap-3">
-                <i data-lucide="package-plus" class="w-5 h-5 text-teal-600 flex-shrink-0 mt-0.5"></i>
-                <div class="text-sm text-teal-900">
-                    <p class="font-semibold mb-0.5">Quiz Builder</p>
-                    <p class="text-teal-700 text-xs leading-relaxed">
-                        Build a brand-new quiz JSON by hand-picking questions from one or more
-                        source files. Drag questions from the <b>source</b> into your
-                        <b>new quiz</b>, reorder them, then download the result.
-                    </p>
-                </div>
-            </div>
 
             <!-- Step 1: Load source files -->
             <div class="space-y-3">
@@ -290,6 +280,9 @@
                     <button class="gd-btn gd-btn-outline" onclick="editorCopyGitHubCdn()" title="Copy the jsDelivr CDN link for this JSON">
                         <i data-lucide="link" class="w-3.5 h-3.5"></i> Copy CDN link
                     </button>
+                    <button class="gd-btn gd-btn-outline" onclick="editorPurgeCdn(this)" title="Force jsDelivr to serve the latest committed version of this JSON immediately">
+                        <i data-lucide="refresh-ccw" class="w-3.5 h-3.5"></i> Purge CDN cache
+                    </button>
                     <button class="gd-btn gd-btn-danger" onclick="editorUnlinkGitHub()" title="Unlink — saves will no longer commit to this GitHub file">
                         <i data-lucide="unlink" class="w-3.5 h-3.5"></i> Unlink
                     </button>
@@ -312,6 +305,65 @@
                     <div class="bg-indigo-50 border border-indigo-100 rounded-xl p-3 text-center">
                         <p class="text-2xl font-bold text-indigo-700" id="editor-stat-final">0</p>
                         <p class="text-xs text-indigo-400 mt-0.5">Final Count</p>
+                    </div>
+                </div>
+
+                <!-- ===== AI Question Update — Gemini API settings ===== -->
+                <div id="ai-settings-card" class="bg-white border border-violet-200 rounded-xl overflow-hidden shadow-sm">
+                    <button type="button" onclick="aiToggleSettings()" class="w-full flex items-center gap-3 px-4 py-3 hover:bg-violet-50/60 transition-colors text-left">
+                        <span class="w-8 h-8 rounded-lg bg-violet-100 flex items-center justify-center flex-shrink-0">
+                            <i data-lucide="sparkles" class="w-4 h-4 text-violet-600"></i>
+                        </span>
+                        <span class="flex-1 min-w-0">
+                            <span class="block text-sm font-bold text-gray-800">AI Question Update <span class="text-violet-500 font-semibold">(Gemini API)</span></span>
+                            <span class="block text-xs text-gray-400">Cross-check answers &amp; regenerate explanations inside each question's edit modal.</span>
+                        </span>
+                        <span id="ai-settings-status" class="ai-status-chip off flex-shrink-0">Not configured</span>
+                        <i data-lucide="chevron-down" id="ai-settings-chevron" class="w-4 h-4 text-gray-400 flex-shrink-0 transition-transform"></i>
+                    </button>
+                    <div id="ai-settings-body" class="hidden border-t border-violet-100 px-4 py-4 space-y-3 bg-violet-50/40">
+                        <div class="grid sm:grid-cols-2 gap-3">
+                            <div>
+                                <label class="text-xs font-bold text-gray-500 uppercase tracking-wider block mb-1">Gemini API Key</label>
+                                <div class="relative">
+                                    <input type="password" id="ai-api-key" placeholder="AIza..." autocomplete="off"
+                                           class="w-full text-sm border border-gray-200 rounded-lg pl-3 pr-9 py-2 bg-white focus:outline-none focus:ring-2 focus:ring-violet-400">
+                                    <button type="button" onclick="aiToggleKeyVisibility()" title="Show / hide key"
+                                            class="absolute right-2 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600">
+                                        <i data-lucide="eye" id="ai-key-eye" class="w-4 h-4"></i>
+                                    </button>
+                                </div>
+                            </div>
+                            <div>
+                                <label class="text-xs font-bold text-gray-500 uppercase tracking-wider block mb-1">Model</label>
+                                <select id="ai-model" class="w-full text-sm border border-gray-200 rounded-lg px-3 py-2 bg-white focus:outline-none focus:ring-2 focus:ring-violet-400">
+                                    <option value="gemini-2.5-flash">gemini-2.5-flash (fast, recommended)</option>
+                                    <option value="gemini-2.5-pro">gemini-2.5-pro (deepest reasoning)</option>
+                                    <option value="gemini-2.0-flash">gemini-2.0-flash</option>
+                                    <option value="gemini-1.5-flash">gemini-1.5-flash</option>
+                                    <option value="custom">Custom model id…</option>
+                                </select>
+                                <input type="text" id="ai-model-custom" placeholder="e.g. gemini-exp-1206"
+                                       class="hidden mt-2 w-full text-sm border border-gray-200 rounded-lg px-3 py-2 bg-white focus:outline-none focus:ring-2 focus:ring-violet-400">
+                            </div>
+                        </div>
+                        <div class="flex items-center gap-2 flex-wrap">
+                            <button type="button" onclick="aiSaveSettings()" class="text-xs bg-violet-600 hover:bg-violet-700 text-white font-bold py-2 px-4 rounded-lg transition-colors flex items-center gap-1.5">
+                                <i data-lucide="save" class="w-3.5 h-3.5"></i> Save
+                            </button>
+                            <button type="button" id="ai-btn-test" onclick="aiTestConnection()" class="text-xs bg-white hover:bg-gray-50 text-gray-700 border border-gray-200 font-semibold py-2 px-4 rounded-lg transition-colors flex items-center gap-1.5">
+                                <i data-lucide="plug-zap" class="w-3.5 h-3.5"></i> Test connection
+                            </button>
+                            <button type="button" onclick="aiClearSettings()" class="text-xs bg-red-50 hover:bg-red-100 text-red-600 border border-red-200 font-semibold py-2 px-4 rounded-lg transition-colors flex items-center gap-1.5">
+                                <i data-lucide="trash-2" class="w-3.5 h-3.5"></i> Clear
+                            </button>
+                            <span id="ai-test-result" class="text-xs font-semibold"></span>
+                        </div>
+                        <p class="text-[11px] text-gray-400 leading-relaxed">
+                            The key is stored only in <b>this browser</b> (localStorage) and is sent directly to
+                            Google's Gemini API — never to any other server. Get a free key at
+                            <a href="https://aistudio.google.com/app/apikey" target="_blank" rel="noopener" class="text-violet-600 underline">aistudio.google.com</a>.
+                        </p>
                     </div>
                 </div>
 
@@ -434,22 +486,6 @@
         <!-- ==================== FIGURE UPDATER TAB ==================== -->
         <div id="tab-figures" class="hidden space-y-5">
 
-            <!-- Intro -->
-            <div class="bg-indigo-50 border border-indigo-100 rounded-xl p-4 flex items-start gap-3">
-                <i data-lucide="image-plus" class="w-5 h-5 text-indigo-600 flex-shrink-0 mt-0.5"></i>
-                <div class="text-sm text-indigo-900">
-                    <p class="font-semibold mb-0.5">Manual Figure Updater</p>
-                    <p class="text-indigo-700 text-xs leading-relaxed">
-                        Crop figures from an exam PDF and assign them to questions — replacing
-                        <code class="bg-indigo-100 px-1 rounded">[image here: ...]</code> placeholders or
-                        existing figures. Crops are kept <b>locally</b> while you resize and preview;
-                        clicking <b>Apply Figures to This Question</b> uploads them to your chosen
-                        image host (<b>GitHub + jsDelivr</b>) and writes
-                        them in. Finally, save the JSON.
-                    </p>
-                </div>
-            </div>
-
             <!-- Step 1: Load JSON -->
             <div class="space-y-3">
                 <div class="flex items-center gap-3 flex-wrap">
@@ -474,25 +510,36 @@
                     <button class="gd-btn gd-btn-outline" onclick="figCopyGitHubCdn()" title="Copy the jsDelivr CDN link for this JSON">
                         <i data-lucide="link" class="w-3.5 h-3.5"></i> Copy CDN link
                     </button>
+                    <button class="gd-btn gd-btn-outline" onclick="figPurgeCdn(this)" title="Force jsDelivr to serve the latest committed version of this JSON immediately">
+                        <i data-lucide="refresh-ccw" class="w-3.5 h-3.5"></i> Purge CDN cache
+                    </button>
                     <button class="gd-btn gd-btn-danger" onclick="figUnlinkGitHub()" title="Unlink — saves will no longer commit to this GitHub file">
                         <i data-lucide="unlink" class="w-3.5 h-3.5"></i> Unlink
                     </button>
                 </div>
             </div>
 
-            <!-- Image hosting (GitHub + jsDelivr) -->
-            <div class="bg-amber-50 border border-amber-100 rounded-xl p-4 space-y-3">
-                <div class="flex items-center gap-2">
-                    <i data-lucide="image-up" class="w-4 h-4 text-amber-600 flex-shrink-0"></i>
-                    <h4 class="font-semibold text-amber-900 text-sm">Image Hosting — GitHub + jsDelivr</h4>
-                </div>
-                <p class="text-xs text-amber-700 leading-relaxed">
-                    Cropped figures are committed to a GitHub repo and served via the
-                    jsDelivr CDN — no rate limits, fast global delivery.
-                </p>
+            <!-- Image hosting (GitHub + jsDelivr) — collapsible settings card -->
+            <div id="fig-host-card" class="bg-white border border-amber-200 rounded-xl overflow-hidden shadow-sm">
+                <button type="button" onclick="figToggleHosting()" class="w-full flex items-center gap-3 px-4 py-3 hover:bg-amber-50/60 transition-colors text-left">
+                    <span class="w-8 h-8 rounded-lg bg-amber-100 flex items-center justify-center flex-shrink-0">
+                        <i data-lucide="image-up" class="w-4 h-4 text-amber-600"></i>
+                    </span>
+                    <span class="flex-1 min-w-0">
+                        <span class="block text-sm font-bold text-gray-800">Image Hosting <span class="text-amber-600 font-semibold">(GitHub + jsDelivr)</span></span>
+                        <span class="block text-xs text-gray-400">Cropped figures are committed to a GitHub repo and served via the jsDelivr CDN.</span>
+                    </span>
+                    <span id="fig-host-status-chip" class="ai-status-chip off flex-shrink-0">Not configured</span>
+                    <i data-lucide="chevron-down" id="fig-host-chevron" class="w-4 h-4 text-gray-400 flex-shrink-0 transition-transform"></i>
+                </button>
+                <div id="fig-host-body" class="hidden border-t border-amber-100 px-4 py-4 space-y-3 bg-amber-50/40">
+                    <p class="text-xs text-amber-700 leading-relaxed">
+                        Cropped figures are committed to a GitHub repo and served via the
+                        jsDelivr CDN — no rate limits, fast global delivery.
+                    </p>
 
-                <!-- GitHub config -->
-                <div id="fig-host-github" class="space-y-2.5">
+                    <!-- GitHub config -->
+                    <div id="fig-host-github" class="space-y-2.5">
                     <div class="grid grid-cols-1 sm:grid-cols-2 gap-2">
                         <div>
                             <label class="fig-cfg-label">Repository <span class="text-amber-500">(owner/repo)</span></label>
@@ -527,6 +574,7 @@
                         </span>
                     </div>
                     <div id="fig-gh-status" class="text-xs text-amber-700"></div>
+                    </div>
                 </div>
             </div>
 
@@ -561,6 +609,9 @@
                         <button type="button" class="fig-nav-btn" id="fig-prev-page">&laquo; Prev</button>
                         <span>Page <b id="fig-cur-page">1</b> / <b id="fig-total-pages">--</b></span>
                         <button type="button" class="fig-nav-btn" id="fig-next-page">Next &raquo;</button>
+                        <label class="fig-nav-btn cursor-pointer flex items-center gap-1" id="fig-cont-label" title="Show this page and the next together on one scroll, so you can crop a figure/question that continues onto the next page">
+                            <input type="checkbox" id="fig-continuous" class="accent-indigo-600 w-3 h-3"> Span pages
+                        </label>
                         <span class="fig-nav-sep"></span>
                         <span class="ml-1">Zoom</span>
                         <button type="button" class="fig-nav-btn" id="fig-zoom-out" title="Zoom out">&minus;</button>
@@ -592,9 +643,21 @@
                             <h4 class="font-semibold text-sky-900 text-sm mb-0.5">Quick Crop &amp; Upload</h4>
                             <p class="text-xs text-sky-700">Crop any region and upload it to your chosen image host — get a reusable image URL.</p>
                         </div>
-                        <button id="fig-quick-upload" class="gd-btn gd-btn-primary">
-                            <i data-lucide="upload-cloud" class="w-3.5 h-3.5"></i> Crop &amp; Upload
-                        </button>
+                        <div class="flex items-center gap-2 flex-wrap">
+                            <label class="flex items-center gap-1.5 text-xs font-semibold text-sky-800 bg-white border border-sky-200 rounded-lg px-3 py-2 cursor-pointer" title="When on, every crop — Quick Crop & Upload AND each question/option figure slot's Crop & Set — first sends the crop to the AI image model to reproduce ONLY the figure (removing question text, options, watermarks) before setting/uploading it">
+                                <input type="checkbox" id="fig-ai-gen" class="accent-sky-600">
+                                <i data-lucide="sparkles" class="w-3.5 h-3.5 text-sky-500"></i> AI figure generator
+                            </label>
+                            <button id="fig-quick-upload" class="gd-btn gd-btn-primary">
+                                <i data-lucide="upload-cloud" class="w-3.5 h-3.5"></i> <span id="fig-quick-upload-label">Crop &amp; Upload</span>
+                            </button>
+                        </div>
+                    </div>
+                    <div id="fig-ai-model-row" class="hidden mt-3 flex items-center gap-2 flex-wrap bg-white border border-sky-200 rounded-lg px-3 py-2">
+                        <label class="text-[11px] font-bold text-sky-700 uppercase tracking-wider whitespace-nowrap">AI figure model</label>
+                        <select id="fig-ai-model" class="text-xs border border-sky-200 rounded-lg px-2 py-1.5 bg-white focus:outline-none focus:ring-2 focus:ring-sky-400"></select>
+                        <input type="text" id="fig-ai-model-custom" placeholder="custom image model id" class="hidden text-xs border border-sky-200 rounded-lg px-2 py-1.5 bg-white focus:outline-none focus:ring-2 focus:ring-sky-400">
+                        <span class="text-[11px] text-sky-500">Reproduces only the figure from each crop (Quick Crop &amp; Upload and every figure slot's Crop &amp; Set), then uploads it. Uses a Gemini API key from the Question Extractor pool, or the Question Editor's key.</span>
                     </div>
                     <div id="fig-quick-result" class="hidden mt-3 text-xs"></div>
                 </div>
@@ -631,6 +694,17 @@
 
                     <!-- Figure slots -->
                     <div class="fig-slots-grid" id="fig-slots-grid"></div>
+
+                    <!-- Question figure position -->
+                    <div id="fig-qpos-panel" class="hidden">
+                        <div class="flex items-center justify-between mb-1.5 flex-wrap gap-1">
+                            <h4 class="font-semibold text-gray-800 text-sm flex items-center gap-1.5">
+                                <i data-lucide="move-vertical" class="w-4 h-4 text-indigo-600"></i> Figure Position in Question
+                            </h4>
+                            <span class="text-[11px] text-gray-400">Place the figure anywhere between the question's lines — preview updates live.</span>
+                        </div>
+                        <div id="fig-qpos-options" class="fig-qpos-box custom-scrollbar"></div>
+                    </div>
 
                     <!-- Live preview -->
                     <div>
@@ -682,21 +756,252 @@
         </div>
         <!-- end figure updater tab -->
 
-        <!-- ==================== FRONTEND BUILDER TAB ==================== -->
-        <div id="tab-builder" class="hidden space-y-5">
+        <!-- ==================== QUESTION EXTRACTOR TAB ==================== -->
+        <div id="tab-extractor" class="hidden space-y-5">
 
-            <!-- Intro -->
-            <div class="bg-violet-50 border border-violet-100 rounded-xl p-4 flex items-start gap-3">
-                <i data-lucide="layout-template" class="w-5 h-5 text-violet-600 flex-shrink-0 mt-0.5"></i>
-                <div class="text-sm text-violet-900">
-                    <p class="font-semibold mb-0.5">Frontend Builder</p>
-                    <p class="text-violet-700 text-xs leading-relaxed">
-                        Visually configure an AI MCQs quiz embed — pick an embedding method,
-                        choose the <b>basic</b> or <b>professional</b> exam interface, tune every
-                        setting, then copy ready-to-paste code for your website.
+            <!-- Extractor API settings — separate free-tier Gemini key POOL -->
+            <div id="qx-api-card" class="bg-white border border-rose-200 rounded-xl overflow-hidden shadow-sm">
+                <button type="button" onclick="qxToggleApiSettings()" class="w-full flex items-center gap-3 px-4 py-3 hover:bg-rose-50/60 transition-colors text-left">
+                    <span class="w-8 h-8 rounded-lg bg-rose-100 flex items-center justify-center flex-shrink-0">
+                        <i data-lucide="key-round" class="w-4 h-4 text-rose-600"></i>
+                    </span>
+                    <span class="flex-1 min-w-0">
+                        <span class="block text-sm font-bold text-gray-800">Extractor API Settings <span class="text-rose-500 font-semibold">(Gemini / DeepSeek — Free-Tier Key Pools)</span></span>
+                        <span class="block text-xs text-gray-400">Separate from the Question Editor's key. Switch between Gemini and DeepSeek; each provider has its own multi-key pool (one key per account) — the extractor auto-switches to the next key when one hits its limit, and limits self-reset after 24 h.</span>
+                    </span>
+                    <span id="qx-ai-status" class="ai-status-chip off flex-shrink-0">Not configured</span>
+                    <i data-lucide="chevron-down" id="qx-api-chevron" class="w-4 h-4 text-gray-400 flex-shrink-0 transition-transform"></i>
+                </button>
+                <div id="qx-api-body" class="hidden border-t border-rose-100 px-4 py-4 space-y-3 bg-rose-50/40">
+                    <div class="flex items-end gap-3 flex-wrap">
+                        <div>
+                            <label class="text-xs font-bold text-gray-500 uppercase tracking-wider block mb-1">Provider</label>
+                            <div class="qx-provider-switch" id="qx-provider-switch">
+                                <button type="button" data-provider="gemini" onclick="qxSetProvider('gemini')">Gemini</button>
+                                <button type="button" data-provider="deepseek" onclick="qxSetProvider('deepseek')">DeepSeek</button>
+                            </div>
+                        </div>
+                        <div>
+                            <label class="text-xs font-bold text-gray-500 uppercase tracking-wider block mb-1">Model <span class="normal-case font-medium text-gray-400">(shared by this provider's keys)</span></label>
+                            <select id="qx-model" class="text-sm border border-gray-200 rounded-lg px-3 py-2 bg-white focus:outline-none focus:ring-2 focus:ring-rose-400"></select>
+                            <input type="text" id="qx-model-custom" placeholder="e.g. deepseek-v4-pro"
+                                   class="hidden mt-2 w-full text-sm border border-gray-200 rounded-lg px-3 py-2 bg-white focus:outline-none focus:ring-2 focus:ring-rose-400">
+                        </div>
+                        <button type="button" onclick="qxPoolAddKey()" class="text-xs bg-white hover:bg-gray-50 text-rose-600 border border-dashed border-rose-300 font-bold py-2 px-3.5 rounded-lg transition-colors flex items-center gap-1.5">
+                            <i data-lucide="plus" class="w-3.5 h-3.5"></i> Add API key
+                        </button>
+                        <button type="button" onclick="qxPoolSave()" class="text-xs bg-rose-600 hover:bg-rose-700 text-white font-bold py-2 px-4 rounded-lg transition-colors flex items-center gap-1.5">
+                            <i data-lucide="save" class="w-3.5 h-3.5"></i> Save Pool
+                        </button>
+                        <button type="button" onclick="qxPoolResetLimits()" class="text-xs bg-white hover:bg-gray-50 text-gray-700 border border-gray-200 font-semibold py-2 px-3.5 rounded-lg transition-colors flex items-center gap-1.5" title="Manually mark every key of this provider as active again">
+                            <i data-lucide="timer-reset" class="w-3.5 h-3.5"></i> Reset all limits
+                        </button>
+                    </div>
+                    <div id="qx-gemini-split-row" class="hidden text-[11px] font-medium text-emerald-800 bg-emerald-50 border border-emerald-200 rounded-lg px-3 py-2 leading-relaxed">
+                        <label class="flex items-start gap-2 cursor-pointer">
+                            <input type="checkbox" id="qx-gemini-split" class="accent-emerald-600 mt-0.5">
+                            <span><b>Split pipeline — save Gemini quota:</b> read the image with the cheap <b>vision model</b> below
+                            (Gemma has its own separate free quota), then run the selected Gemini model above <b>text-only</b> for the
+                            actual question generation. Off = single multimodal call with the Gemini model (uses its vision quota).
+                            If the vision model is unavailable, extraction automatically falls back to the direct call.</span>
+                        </label>
+                    </div>
+                    <div id="qx-deepseek-note" class="hidden text-[11px] font-medium text-sky-800 bg-sky-50 border border-sky-200 rounded-lg px-3 py-2 leading-relaxed">
+                        <p><b>How DeepSeek mode works:</b> DeepSeek's API cannot read images, so the crop is first
+                        <b>transcribed by the vision model below via the Gemini API</b> (using your Gemini pool keys, or the Question Editor's
+                        key as fallback) with a minimal low-token prompt — then <b>DeepSeek does all the heavy work</b> (structuring,
+                        solving, explanation). This keeps most of the token usage on your DeepSeek limits. Keep at least one Gemini key configured.</p>
+                    </div>
+                    <div id="qx-vision-row" class="hidden text-[11px] bg-white border border-gray-200 rounded-lg px-3 py-2">
+                        <div class="flex items-center gap-2 flex-wrap">
+                        <label class="text-[11px] font-bold text-gray-500 uppercase tracking-wider whitespace-nowrap">Vision model (image-reading step)</label>
+                        <select id="qx-vision-model" class="text-xs border border-gray-200 rounded-lg px-2 py-1.5 bg-white focus:outline-none focus:ring-2 focus:ring-rose-400">
+                            <!-- options rendered by JS -->
+                        </select>
+                        <input type="text" id="qx-vision-model-custom" placeholder="e.g. gemma-3-27b-it"
+                               class="hidden text-xs border border-gray-200 rounded-lg px-2 py-1.5 bg-white focus:outline-none focus:ring-2 focus:ring-rose-400">
+                        <span class="text-gray-400">Called via the Gemini API with your Gemini pool keys — its quota is separate from the generation model's.</span>
+                        </div>
+                    </div>
+                    <div id="qx-keys-list" class="space-y-2"><!-- key rows rendered by JS --></div>
+                    <p class="text-[11px] text-gray-400 leading-relaxed" id="qx-pool-hint">
+                        Keys are tried <b>in order</b>. When a request returns a quota/limit error, that key is
+                        automatically <b>deactivated for 24 hours</b> (daily reset window) and the call retries
+                        with the next active key — repeating till the last key. Deactivated keys re-activate automatically after
+                        24 h, or instantly via their <b>Reactivate</b> button. Each provider keeps its own key pool &amp; limits.
+                        Stored only in this browser (localStorage). Free Gemini keys:
+                        <a href="https://aistudio.google.com/app/apikey" target="_blank" rel="noopener" class="text-rose-600 underline">aistudio.google.com</a> ·
+                        DeepSeek keys: <a href="https://platform.deepseek.com/api_keys" target="_blank" rel="noopener" class="text-rose-600 underline">platform.deepseek.com</a>.
                     </p>
                 </div>
             </div>
+
+            <!-- Step 1: Load source -->
+            <div class="space-y-3">
+                <div class="flex items-center gap-3">
+                    <span class="w-7 h-7 rounded-full bg-rose-600 text-white flex items-center justify-center text-sm font-bold flex-shrink-0">1</span>
+                    <h3 class="font-semibold text-gray-800">Load Exam PDF or Image <span class="text-gray-400 font-normal text-sm">(to crop questions from)</span></h3>
+                </div>
+                <div id="qx-source-pick" class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <div class="fig-upload-area" onclick="document.getElementById('qx-pdf-file').click()">
+                        <input type="file" id="qx-pdf-file" accept="application/pdf" class="hidden">
+                        <i data-lucide="file-up" class="w-9 h-9 mx-auto text-gray-400 mb-2"></i>
+                        <p class="text-sm text-gray-700 font-semibold">Upload a PDF</p>
+                        <p class="text-xs text-gray-400 mt-1">Rendered at high fidelity for accurate cropping</p>
+                    </div>
+                    <div class="fig-upload-area" onclick="document.getElementById('qx-img-file').click()">
+                        <input type="file" id="qx-img-file" accept="image/*" class="hidden">
+                        <i data-lucide="image-plus" class="w-9 h-9 mx-auto text-gray-400 mb-2"></i>
+                        <p class="text-sm text-gray-700 font-semibold">Upload an image</p>
+                        <p class="text-xs text-gray-400 mt-1">PNG, JPG, WEBP — screenshot or photo of the paper</p>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Step 2: Viewer + crop + extract -->
+            <div id="qx-workspace" class="hidden space-y-4">
+                <div class="flex items-center gap-3">
+                    <span class="w-7 h-7 rounded-full bg-rose-600 text-white flex items-center justify-center text-sm font-bold flex-shrink-0">2</span>
+                    <h3 class="font-semibold text-gray-800">Crop a question <span class="text-gray-400 font-normal text-sm">(drag around ONE full question, like Google Lens)</span></h3>
+                </div>
+                <div class="fig-pdf-stage">
+                    <div class="fig-page-nav">
+                        <button type="button" class="fig-nav-btn" id="qx-prev-page">&laquo; Prev</button>
+                        <span>Page <b id="qx-cur-page">1</b> / <b id="qx-total-pages">--</b></span>
+                        <button type="button" class="fig-nav-btn" id="qx-next-page">Next &raquo;</button>
+                        <label class="fig-nav-btn cursor-pointer flex items-center gap-1" id="qx-cont-label" title="Show this page and the next together on one scroll, so you can crop a question that continues onto the next page">
+                            <input type="checkbox" id="qx-continuous" class="accent-rose-600 w-3 h-3"> Span pages
+                        </label>
+                        <span class="fig-nav-sep"></span>
+                        <span class="ml-1">Zoom</span>
+                        <button type="button" class="fig-nav-btn" id="qx-zoom-out" title="Zoom out">&minus;</button>
+                        <input type="text" class="fig-zoom-input" id="qx-zoom-val" value="100%" readonly>
+                        <button type="button" class="fig-nav-btn" id="qx-zoom-in" title="Zoom in">+</button>
+                        <button type="button" class="fig-nav-btn" id="qx-zoom-reset" title="Reset zoom to fit">Fit</button>
+                        <span class="fig-nav-sep"></span>
+                        <button type="button" class="fig-nav-btn" id="qx-change-file" title="Load a different PDF or image">Change File</button>
+                    </div>
+                    <div id="qx-pdf-scroll" class="fig-pdf-scroll">
+                        <div class="fig-pdf-wrap">
+                            <canvas id="qx-canvas"></canvas>
+                        </div>
+                    </div>
+                    <p class="fig-crop-hint">
+                        <i data-lucide="info" class="w-3 h-3"></i>
+                        Crop mode is always <b>on</b> — drag a box around one complete question (statement + options), then click <b>Extract Question with AI</b>.
+                    </p>
+                </div>
+                <div class="flex items-stretch gap-2 flex-wrap">
+                    <div class="flex items-center gap-2 bg-white border border-gray-200 rounded-xl px-3 flex-shrink-0">
+                        <label class="text-[11px] font-bold text-gray-500 uppercase tracking-wider whitespace-nowrap">Output</label>
+                        <select id="qx-lang" class="text-sm border-0 bg-transparent py-2 focus:outline-none">
+                            <option value="auto">Auto-detect language</option>
+                            <option value="en">English</option>
+                            <option value="hi">Hindi</option>
+                            <option value="bilingual">Bilingual (EN + HI)</option>
+                        </select>
+                    </div>
+                    <label class="flex items-center gap-1.5 text-xs font-semibold text-gray-600 bg-white border border-gray-200 rounded-xl px-3 flex-shrink-0 cursor-pointer" title="Reading-comprehension mode: crop the passage AND all its questions (use Add crop to span pages/columns). One AI call extracts the passage plus every question, and Save stores them as a linked passage group in the standard JSON format.">
+                        <input type="checkbox" id="qx-passage" class="accent-rose-600">
+                        <i data-lucide="book-open-text" class="w-3.5 h-3.5 text-rose-500"></i> Passage mode
+                    </label>
+                    <label class="flex items-center gap-1.5 text-xs font-semibold text-gray-600 bg-white border border-gray-200 rounded-xl px-3 flex-shrink-0 cursor-pointer" title="For numerical/mathematical questions, break the solution into clearly numbered steps instead of a dense paragraph">
+                        <input type="checkbox" id="qx-steps" checked class="accent-rose-600">
+                        <i data-lucide="list-ordered" class="w-3.5 h-3.5 text-rose-500"></i> Step-by-step math
+                    </label>
+                    <label id="qx-hiexpl-wrap" class="flex items-center gap-1.5 text-xs font-semibold text-gray-600 bg-white border border-gray-200 rounded-xl px-3 flex-shrink-0 cursor-pointer" title="Keep the question and options in their own language (English), but write the EXPLANATION in Hindi. It is saved to the main _aimcq_explanation field. Not applicable in Hindi-only / Bilingual output modes.">
+                        <input type="checkbox" id="qx-hi-expl" class="accent-rose-600">
+                        <i data-lucide="languages" class="w-3.5 h-3.5 text-rose-500"></i> Hindi explanation
+                    </label>
+                    <div class="flex items-center gap-2 bg-white border border-gray-200 rounded-xl px-3 flex-shrink-0" title="How thorough the generated explanation should be">
+                        <label class="text-[11px] font-bold text-gray-500 uppercase tracking-wider whitespace-nowrap">Explanation</label>
+                        <select id="qx-detail" class="text-sm border-0 bg-transparent py-2 focus:outline-none">
+                            <option value="detailed" selected>Detailed (for weak students)</option>
+                            <option value="standard">Standard</option>
+                            <option value="concise">Concise</option>
+                        </select>
+                    </div>
+                    <button id="qx-add-crop-btn" class="flex-shrink-0 bg-white hover:bg-rose-50 border border-rose-200 text-rose-700 font-bold py-2.5 px-4 rounded-xl text-sm flex items-center justify-center gap-2 transition-colors shadow-sm" title="Bank the current selection and keep going — turn the page or select another region (e.g. the rest of the question, or the same question in another language), then click Extract to combine them all into ONE question.">
+                        <i data-lucide="plus-square" class="w-4 h-4"></i> Add crop
+                    </button>
+                    <button id="qx-extract-btn" class="flex-1 min-w-[220px] bg-rose-600 hover:bg-rose-700 disabled:opacity-60 disabled:cursor-not-allowed text-white font-bold py-2.5 px-5 rounded-xl text-sm flex items-center justify-center gap-2 transition-colors shadow-sm">
+                        <i data-lucide="sparkles" class="w-4 h-4"></i> <span id="qx-extract-label">Extract Question with AI</span>
+                    </button>
+                </div>
+                <div id="qx-crop-queue" class="hidden mt-3"><!-- queued multi-part crops (rendered by JS) --></div>
+            </div>
+
+            <!-- Step 3: Review -->
+            <div id="qx-review" class="hidden space-y-3">
+                <div class="flex items-center gap-3 flex-wrap">
+                    <span class="w-7 h-7 rounded-full bg-rose-600 text-white flex items-center justify-center text-sm font-bold flex-shrink-0">3</span>
+                    <h3 class="font-semibold text-gray-800">Review &amp; save</h3>
+                    <span id="qx-confidence" class="ai-status-chip off"></span>
+                    <div class="qx-provider-switch ml-auto" id="qx-review-mode" title="Preview shows the question exactly as students will see it">
+                        <button type="button" data-mode="preview" onclick="qxSetReviewMode('preview')"><i data-lucide="eye" class="w-3.5 h-3.5 inline-block mr-1 -mt-0.5"></i>Preview</button>
+                        <button type="button" data-mode="editor" onclick="qxSetReviewMode('editor')"><i data-lucide="pencil" class="w-3.5 h-3.5 inline-block mr-1 -mt-0.5"></i>Editor</button>
+                    </div>
+                </div>
+                <div class="bg-white border border-gray-200 rounded-2xl p-4 space-y-4 shadow-sm">
+                    <div class="flex items-start gap-3 flex-wrap">
+                        <img id="qx-crop-thumb" class="qx-crop-thumb" alt="cropped question">
+                        <p id="qx-ai-note" class="text-xs text-gray-500 flex-1 min-w-[200px]"></p>
+                    </div>
+                    <div id="qx-preview-panel" class="hidden"><!-- student-facing preview (rendered by JS) --></div>
+                    <div id="qx-fields"><!-- primary language fields (rendered by JS) --></div>
+                    <div id="qx-fields-hi" class="hidden border-t border-gray-100 pt-4"><!-- hindi fields --></div>
+                    <div class="flex items-center gap-2 flex-wrap pt-1">
+                        <div class="flex items-center gap-1.5 bg-white border border-gray-200 rounded-lg px-2.5 py-1" title="Which subject library this question will be saved into">
+                            <i data-lucide="library" class="w-3.5 h-3.5 text-emerald-600"></i>
+                            <label class="text-[10.5px] font-bold text-gray-500 uppercase tracking-wider whitespace-nowrap">Library</label>
+                            <select id="qx-save-lib" class="text-xs font-semibold text-gray-700 bg-transparent border-0 py-1 focus:outline-none max-w-[150px]"></select>
+                            <button type="button" id="qx-lib-new" title="Create a new subject library (e.g. Physics, History)"
+                                    class="text-emerald-600 hover:text-emerald-700 hover:bg-emerald-50 rounded p-0.5">
+                                <i data-lucide="plus" class="w-3.5 h-3.5"></i>
+                            </button>
+                        </div>
+                        <button id="qx-save-btn" class="bg-emerald-600 hover:bg-emerald-700 text-white text-sm font-bold py-2 px-4 rounded-lg transition-colors flex items-center gap-1.5">
+                            <i data-lucide="database" class="w-4 h-4"></i> Save to Question Bank
+                        </button>
+                        <button id="qx-discard-btn" class="bg-gray-100 hover:bg-gray-200 text-gray-600 text-sm font-semibold py-2 px-4 rounded-lg transition-colors flex items-center gap-1.5">
+                            <i data-lucide="x" class="w-4 h-4"></i> Discard
+                        </button>
+                        <span class="text-[11px] text-gray-400">Saved locally (IndexedDB) — survives refresh &amp; browser close.</span>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Question Bank -->
+            <div class="bg-white border border-gray-200 rounded-2xl overflow-hidden shadow-sm">
+                <div class="flex items-center justify-between gap-2 flex-wrap px-4 py-3 border-b border-gray-100 bg-gray-50/60">
+                    <p class="text-sm font-bold text-gray-800 flex items-center gap-2">
+                        <i data-lucide="database" class="w-4 h-4 text-rose-600"></i> Question Bank
+                        <span id="qx-bank-count" class="ai-status-chip off">0 questions</span>
+                    </p>
+                    <div class="flex items-center gap-2 flex-wrap">
+                        <div class="flex items-center gap-1.5 bg-white border border-gray-200 rounded-lg px-2.5 py-1" title="Filter the bank by subject library">
+                            <i data-lucide="library" class="w-3.5 h-3.5 text-rose-500"></i>
+                            <select id="qx-lib-view" class="text-xs font-semibold text-gray-700 bg-transparent border-0 py-1 focus:outline-none max-w-[170px]"></select>
+                        </div>
+                        <button id="qx-export-btn" class="text-xs bg-rose-600 hover:bg-rose-700 text-white font-bold py-2 px-3.5 rounded-lg transition-colors flex items-center gap-1.5" title="Export the questions currently shown (selected library, or all)">
+                            <i data-lucide="download" class="w-3.5 h-3.5"></i> Export JSON
+                        </button>
+                        <button id="qx-clear-btn" class="text-xs bg-red-50 hover:bg-red-100 text-red-600 border border-red-200 font-semibold py-2 px-3.5 rounded-lg transition-colors flex items-center gap-1.5" title="Delete the questions currently shown (selected library, or all)">
+                            <i data-lucide="trash-2" class="w-3.5 h-3.5"></i> <span id="qx-clear-label">Delete All</span>
+                        </button>
+                        <button id="qx-lib-del" class="hidden text-xs bg-white hover:bg-red-50 text-red-500 border border-red-200 font-semibold py-2 px-3 rounded-lg transition-colors flex items-center gap-1.5" title="Delete this library and all its questions">
+                            <i data-lucide="folder-x" class="w-3.5 h-3.5"></i> Delete library
+                        </button>
+                    </div>
+                </div>
+                <div id="qx-bank-list" class="divide-y divide-gray-100 max-h-[420px] overflow-y-auto custom-scrollbar">
+                    <p class="text-sm text-gray-400 px-4 py-6 text-center">No questions saved yet — crop &amp; extract your first question above.</p>
+                </div>
+            </div>
+        </div>
+
+        <!-- ==================== FRONTEND BUILDER TAB ==================== -->
+        <div id="tab-builder" class="hidden space-y-5">
 
             <div class="grid grid-cols-1 lg:grid-cols-2 gap-5">
 
@@ -1004,6 +1309,82 @@
                 </div>
             </div>
 
+            <!-- ===== AI ANALYSIS (Gemini) — visible in both language tabs ===== -->
+            <div id="qe-ai-section" class="border border-violet-200 rounded-2xl bg-gradient-to-br from-violet-50/70 to-indigo-50/50 p-4">
+                <div class="flex items-center justify-between gap-2 flex-wrap mb-3">
+                    <p class="text-sm font-bold text-gray-800 flex items-center gap-2">
+                        <i data-lucide="sparkles" class="w-4 h-4 text-violet-600"></i>
+                        AI Analysis <span class="text-violet-500 text-xs font-semibold">(Gemini)</span>
+                    </p>
+                    <span id="qe-ai-status" class="ai-status-chip off">Not configured</span>
+                </div>
+
+                <div class="flex items-end gap-2 flex-wrap">
+                    <div class="flex-1 min-w-[180px]">
+                        <label class="text-[11px] font-bold text-gray-500 uppercase tracking-wider block mb-1">
+                            Your suggested correct option <span class="normal-case font-medium text-gray-400">(optional — AI will verify it)</span>
+                        </label>
+                        <select id="qe-ai-suggest" class="w-full text-sm border border-gray-200 rounded-lg px-3 py-2 bg-white focus:outline-none focus:ring-2 focus:ring-violet-400">
+                            <option value="">None — let AI decide independently</option>
+                        </select>
+                    </div>
+                    <label class="flex items-center gap-1.5 text-xs font-semibold text-gray-600 bg-white border border-gray-200 rounded-lg px-3 py-2 cursor-pointer flex-shrink-0" title="For numerical/mathematical questions, break the solution into clearly numbered steps instead of a dense paragraph">
+                        <input type="checkbox" id="qe-ai-steps" checked class="accent-violet-600">
+                        <i data-lucide="list-ordered" class="w-3.5 h-3.5 text-violet-500"></i> Step-by-step math
+                    </label>
+                    <div class="flex items-center gap-1.5 text-xs font-semibold text-gray-600 bg-white border border-gray-200 rounded-lg px-3 py-2 flex-shrink-0" title="How thorough the generated explanation should be">
+                        <i data-lucide="book-open" class="w-3.5 h-3.5 text-violet-500"></i>
+                        <select id="qe-ai-detail" class="bg-transparent border-0 focus:outline-none text-xs font-semibold text-gray-600">
+                            <option value="detailed" selected>Detailed</option>
+                            <option value="standard">Standard</option>
+                            <option value="concise">Concise</option>
+                        </select>
+                    </div>
+                    <button type="button" id="qe-ai-analyze-btn" onclick="qeAiAnalyze()"
+                            class="bg-violet-600 hover:bg-violet-700 disabled:opacity-60 disabled:cursor-not-allowed text-white text-sm font-bold py-2 px-4 rounded-lg transition-colors flex items-center gap-2 shadow-sm flex-shrink-0">
+                        <i data-lucide="scan-search" class="w-4 h-4"></i>
+                        <span id="qe-ai-analyze-label">Analyze Question</span>
+                    </button>
+                </div>
+                <p class="text-[11px] text-gray-400 mt-2">
+                    AI re-solves the question, cross-checks the marked answer, and drafts a new explanation
+                    <b>in the exact format of the existing explanation</b>. Nothing is changed until you click Apply.
+                </p>
+
+                <!-- Error -->
+                <div id="qe-ai-error" class="hidden mt-3 text-xs font-semibold text-red-600 bg-red-50 border border-red-200 rounded-lg px-3 py-2"></div>
+
+                <!-- Result -->
+                <div id="qe-ai-result" class="hidden mt-3 space-y-3">
+                    <div id="qe-ai-verdict" class="rounded-xl px-4 py-3 text-sm font-semibold flex items-start gap-2.5"></div>
+                    <div id="qe-ai-suggest-verdict" class="hidden rounded-xl px-4 py-3 text-xs bg-sky-50 border border-sky-200 text-sky-800"></div>
+                    <div>
+                        <p class="text-[11px] font-bold text-gray-500 uppercase tracking-wider mb-1">AI Reasoning</p>
+                        <p id="qe-ai-reasoning" class="text-xs text-gray-600 leading-relaxed bg-white border border-gray-200 rounded-lg px-3 py-2.5"></p>
+                    </div>
+                    <div>
+                        <p class="text-[11px] font-bold text-gray-500 uppercase tracking-wider mb-1">New Explanation Preview <span class="normal-case font-medium text-gray-400">(same format as existing)</span></p>
+                        <div id="qe-ai-expl-preview" class="qe-ai-expl-preview bg-white border border-gray-200 rounded-lg px-3 py-2.5 text-sm"></div>
+                        <div id="qe-ai-expl-preview-hi-wrap" class="hidden mt-2">
+                            <p class="text-[11px] font-bold text-gray-500 uppercase tracking-wider mb-1">नई व्याख्या (हिन्दी)</p>
+                            <div id="qe-ai-expl-preview-hi" class="qe-ai-expl-preview bg-white border border-gray-200 rounded-lg px-3 py-2.5 text-sm" lang="hi"></div>
+                        </div>
+                    </div>
+                    <div class="flex items-center gap-2 flex-wrap pt-1">
+                        <button type="button" onclick="qeAiApply('option')" class="text-xs bg-emerald-600 hover:bg-emerald-700 text-white font-bold py-2 px-3.5 rounded-lg transition-colors flex items-center gap-1.5">
+                            <i data-lucide="check-circle" class="w-3.5 h-3.5"></i> Apply Correct Option
+                        </button>
+                        <button type="button" onclick="qeAiApply('explanation')" class="text-xs bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-2 px-3.5 rounded-lg transition-colors flex items-center gap-1.5">
+                            <i data-lucide="file-text" class="w-3.5 h-3.5"></i> Apply Explanation
+                        </button>
+                        <button type="button" onclick="qeAiApply('both')" class="text-xs bg-violet-600 hover:bg-violet-700 text-white font-bold py-2 px-3.5 rounded-lg transition-colors flex items-center gap-1.5">
+                            <i data-lucide="wand-2" class="w-3.5 h-3.5"></i> Apply Both
+                        </button>
+                        <span class="text-[11px] text-gray-400 ml-1">Then hit <b>Save Changes</b> below to commit.</span>
+                    </div>
+                </div>
+            </div>
+
         </div>
 
         <!-- Modal Footer -->
@@ -1117,15 +1498,15 @@
                 Set your repository and token in the <b>Credentials</b> tab first.
             </div>
             <div class="px-5 py-4 space-y-3">
-                <p class="text-xs text-gray-500 leading-relaxed">
+                <p class="text-xs text-gray-500 leading-relaxed" id="fig-gh-up-desc">
                     Commit a new JSON file into the repository — into an existing folder
                     or a brand-new one (the folder is created automatically). Use this to
                     publish a quiz file, then load it from the Browse tab.
                 </p>
 
-                <!-- Pick the JSON to upload -->
+                <!-- Pick the file to upload (JSON everywhere; also PDF/image/HTML for the Editor) -->
                 <div>
-                    <label class="fig-cfg-label" style="color:#475569">JSON file to upload</label>
+                    <label class="fig-cfg-label" style="color:#475569" id="fig-gh-up-label">JSON file to upload</label>
                     <div id="fig-gh-up-dropzone" class="border-2 border-dashed border-gray-300 rounded-xl p-5 text-center cursor-pointer hover:bg-gray-50 transition-colors relative">
                         <input type="file" id="fig-gh-up-file" accept=".json" class="absolute inset-0 w-full h-full opacity-0 cursor-pointer">
                         <i data-lucide="file-json" class="w-8 h-8 mx-auto text-gray-400 mb-1.5"></i>
@@ -1422,27 +1803,6 @@
     })();
   }
 
-  // ---------- critical CSS (injected synchronously, before any markup paints) ----------
-  // The overlay modals (#q-editor-modal, #fig-gh-picker-modal) and the toast are
-  // meant to be position:fixed and hidden via .hidden -> display:none. Those rules,
-  // however, live in the async Tailwind runtime + mcqs-tool.css. Until those load,
-  // the big modal blocks fall back to normal in-flow block elements and inflate the
-  // page height. Because the loader keeps the root at visibility:hidden during load
-  // (which STILL reserves layout space), that inflated height shows up as phantom
-  // white space below the tool. We inline the few critical rules here so the hidden
-  // overlays are pulled out of flow from the very first paint, regardless of CDN timing.
-  function injectCriticalCSS() {
-    if (document.querySelector("style[data-mcqs-critical]")) { return; }
-    var st = document.createElement("style");
-    st.setAttribute("data-mcqs-critical", "1");
-    st.textContent =
-      "#q-editor-modal,#fig-gh-picker-modal{position:fixed;inset:0;}" +
-      "#q-editor-modal.hidden,#fig-gh-picker-modal.hidden,.gd-modal.hidden{display:none!important;}" +
-      "#toast{position:fixed;}";
-    // Insert as early as possible so it wins the race against the markup paint.
-    (document.head || document.documentElement).appendChild(st);
-  }
-
   // ---------- mount ----------
   function findHost() {
     return document.querySelector("[data-mcqs-tool]")
@@ -1456,16 +1816,20 @@
     if (host.getAttribute("data-mcqs-mounted")) { return; }
     host.setAttribute("data-mcqs-mounted", "1");
 
-    // 0) Critical rules first — keep hidden overlays out of flow before markup paints.
-    injectCriticalCSS();
-
-    // Honor data-height ("100vh", "640", "640px", ...).
+    // Height handling — the tool is height-flexible by default so the page
+    // content below it flows right after the tool (no forced whitespace).
+    //   data-height absent / "auto" / "100vh"  -> flexible (legacy "100vh"
+    //   values are treated as auto on purpose: forcing a full-viewport
+    //   min-height left a white gap between the tool and the content below).
+    //   data-height "640" / "640px" / "80vh" (anything else) -> honored as
+    //   a min-height for pages that really want a fixed reserve.
     var h = host.getAttribute("data-height");
-    if (h) { host.style.minHeight = /^\d+$/.test(h) ? (h + "px") : h; }
+    var flexibleH = !h || h === "auto" || h === "100vh";
+    if (!flexibleH) { host.style.minHeight = /^\d+$/.test(h) ? (h + "px") : h; }
     host.style.width = "100%";
     if (!host.style.position) { host.style.position = "relative"; }
     host.style.background = "#f3f4f6";            // calm backdrop = no white/unstyled flash
-    if (!h) { host.style.minHeight = "240px"; }   // reserve space for the loader
+    if (flexibleH) { host.style.minHeight = "240px"; } // reserve space for the loader only
 
     // 1) Start fetching styles + libraries BEFORE the markup can paint.
     loadDeps();
@@ -1473,7 +1837,9 @@
     // 2) Build the tool markup, but keep it hidden until the CSS is applied.
     //    It still goes into the DOM so the core script can wire up against it.
     var root = document.createElement("div");
-    root.className = "mcqs-tool-root min-h-screen p-4 sm:p-8 text-gray-800";
+    // NOTE: no "min-h-screen" here — the root grows with its content, so the
+    // homepage content below the tool sits directly under it (no white gap).
+    root.className = "mcqs-tool-root p-4 sm:p-8 text-gray-800";
     root.style.visibility = "hidden";
     root.style.opacity = "0";
     root.style.transition = "opacity .18s ease";
@@ -1511,6 +1877,9 @@
           root.style.visibility = "";
           root.style.opacity = "1";
           host.style.background = "";
+          // Flexible mode: drop the loader placeholder min-height so the
+          // host now collapses/grows exactly to the tool's content height.
+          if (flexibleH) { host.style.minHeight = ""; }
           if (overlay && overlay.parentNode) {
             // let the fade run, then drop the overlay
             setTimeout(function () {
