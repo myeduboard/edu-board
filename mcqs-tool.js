@@ -1484,7 +1484,7 @@
                     <span id="fig-gh-picker-loc">Repository contents</span>
                 </span>
             </div>
-            <div id="fig-gh-picker-list" class="overflow-y-auto custom-scrollbar" style="max-height: 38vh;">
+            <div id="fig-gh-picker-list">
                 <div class="p-8 text-center text-gray-400 text-sm">
                     Enter a folder and click <b>Browse</b> to list its JSON files.
                 </div>
@@ -1582,7 +1582,7 @@
                         <i data-lucide="folder" class="w-3 h-3"></i>
                         <span id="fig-gh-del-loc">Repository contents</span>
                     </div>
-                    <div id="fig-gh-del-list" class="overflow-y-auto custom-scrollbar" style="max-height:34vh;">
+                    <div id="fig-gh-del-list">
                         <div class="p-8 text-center text-gray-400 text-sm">
                             Enter a folder and click <b>Browse</b> to list contents.
                         </div>
