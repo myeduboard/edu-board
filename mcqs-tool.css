@@ -584,7 +584,18 @@
         }
         .ghtab:hover { color: #334155; }
         .ghtab.active { color: #4f46e5; border-bottom-color: #4f46e5; }
-        .ghtab-panel { background: #fff; }
+        .ghtab-panel {
+            background: #fff;
+            /* Fill the remaining modal height and scroll internally as one
+               unit (header/tab-bar/footer stay fixed). min-height:0 lets a
+               flex item shrink below its content size instead of forcing
+               the whole modal to overflow and silently clip content. */
+            flex: 1 1 auto; min-height: 0; overflow-y: auto;
+        }
+        .ghtab-panel::-webkit-scrollbar { width: 6px; }
+        .ghtab-panel::-webkit-scrollbar-track { background: #f1f1f1; border-radius: 4px; }
+        .ghtab-panel::-webkit-scrollbar-thumb { background: #c1c1c1; border-radius: 4px; }
+        .ghtab-panel::-webkit-scrollbar-thumb:hover { background: #a8a8a8; }
         /* Recent-file (mention) chips */
         .gh-recent-chip {
             display: inline-flex; align-items: center; gap: 5px;
