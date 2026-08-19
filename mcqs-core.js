@@ -4678,14 +4678,19 @@ let ghJsonCreds = { repo: '', branch: 'main', token: '' };
 // Which tab the picker is serving: 'figures' or 'editor'.
 let ghPickerTarget = 'figures';
 
-// ---- File-type support: only the Editor's picker browses/uploads/deletes
-// PDF, image & HTML files in addition to JSON. Figures/Quiz Builder stay
-// JSON-only (they parse the file as question data, so nothing else fits). ----
+// ---- File-type support: every GitHub picker instance (Editor, Quiz
+// Builder, Figure Updater — they share this one modal) browses, uploads,
+// and deletes PDF, image & HTML files in addition to JSON. JSON is parsed
+// and delivered into whichever tab opened the picker; the other types
+// aren't question data, so their CDN link is copied instead. ----
 const GH_EDITOR_EXTRA_EXTS = ['pdf', 'png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'html', 'htm'];
 const GH_IMAGE_EXTS = ['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg'];
 
 function ghSupportsExtraTypes() {
-    return ghPickerTarget === 'editor';
+    // PDF/image/HTML browse-upload-delete support applies to every GitHub
+    // picker instance (Editor, Quiz Builder, Figure Updater) — they all
+    // share this one modal.
+    return true;
 }
 // Classify a filename into a display "kind": json | pdf | image | html | other.
 function ghFileKind(name) {
@@ -4723,7 +4728,7 @@ function ghMimeFor(kind, name) {
     return 'application/octet-stream';
 }
 // Is this filename browsable/loadable in the current picker context?
-// JSON everywhere; PDF/image/HTML only when the Editor opened the picker.
+// JSON, PDF, image & HTML are all browsable in every picker instance.
 function ghFileIsBrowsable(name) {
     const ext = (String(name).split('.').pop() || '').toLowerCase();
     if (ext === 'json') return true;
@@ -4883,7 +4888,10 @@ function ghSwitchTab(tab) {
     lucide.createIcons();
 }
 
-// Open the GitHub picker modal for a given tab ('figures' | 'editor').
+// Open the GitHub picker modal for a given tab ('figures' | 'editor' | 'quizbuilder').
+// All three targets share this one modal, and all three now browse, upload,
+// and delete JSON, PDF, image & HTML files — JSON is delivered into the
+// tab that opened the picker; other types have their CDN link copied.
 function figGitHubOpenPicker(target) {
     const modal = document.getElementById('fig-gh-picker-modal');
     if (!modal) return;
@@ -4928,10 +4936,10 @@ function figGitHubOpenPicker(target) {
         : 'Exact file path, e.g. quizzes/physics.json';
     const footerHint = document.getElementById('fig-gh-footer-hint');
     if (footerHint) footerHint.innerHTML = extra
-        ? 'Files load via the GitHub API. JSON loads straight into the Editor; the <b>CDN</b> button (or clicking a PDF/image/HTML row) copies its jsDelivr link.'
+        ? 'Files load via the GitHub API. JSON loads straight into the tool; the <b>CDN</b> button (or clicking a PDF/image/HTML row) copies its jsDelivr link.'
         : 'Files load via the GitHub API. The <b>CDN</b> button copies a file\'s jsDelivr link.';
 
-    // Upload tab: widen accepted types when the Editor opened the picker.
+    // Upload tab: JSON, PDF, image & HTML are all accepted for every target.
     const upFile = document.getElementById('fig-gh-up-file');
     if (upFile) upFile.accept = extra ? '.json,.pdf,.png,.jpg,.jpeg,.gif,.webp,.svg,.html,.htm' : '.json';
     const upLabel = document.getElementById('fig-gh-up-label');
@@ -5029,9 +5037,8 @@ async function figGitHubBrowse() {
                 'That path is a file, not a folder. Use the "Load a file directly" box below.</div>';
             return;
         }
-        // Folders first, then browsable files (JSON everywhere; also PDF,
-        // image & HTML when the Editor opened this picker). Other files
-        // are ignored.
+        // Folders first, then browsable files (JSON, PDF, image & HTML).
+        // Other file types are ignored.
         const folders = items.filter(x => x.type === 'dir')
             .sort((a, b) => a.name.localeCompare(b.name));
         const jsons = items.filter(x => x.type === 'file' && ghFileIsBrowsable(x.name))
@@ -5155,10 +5162,7 @@ function figGitHubLoadByPath() {
         return;
     }
     if (!path || !ghFileIsBrowsable(path)) {
-        showToast('Bad path',
-            ghSupportsExtraTypes()
-                ? 'Enter a path ending in .json, .pdf, an image, or .html'
-                : 'Enter a path ending in .json', 'error');
+        showToast('Bad path', 'Enter a path ending in .json, .pdf, an image, or .html', 'error');
         return;
     }
     figGitHubLoadFile(repo, branch, path, path.split('/').pop());
@@ -5166,8 +5170,8 @@ function figGitHubLoadByPath() {
 
 // Fetch a file from GitHub. JSON is parsed and delivered into the tab that
 // opened the picker (Editor / Quiz Builder / Figure Updater). PDF, image &
-// HTML files (Editor-only) aren't parseable question data, so their
-// jsDelivr CDN link is copied to the clipboard instead.
+// HTML files aren't parseable question data, so their jsDelivr CDN link is
+// copied to the clipboard instead.
 async function figGitHubLoadFile(repo, branch, path, name) {
     if (ghFileKind(name) !== 'json') {
         const ghFile = { repo, branch, path, name };
@@ -5613,7 +5617,7 @@ function ghStageUpload(data, suggestedName) {
 }
 
 // Stage a raw (binary-safe, base64) file — PDF, image, or HTML — for upload.
-// Editor-only: these commit as-is, with no JSON parsing or canonicalization.
+// These commit as-is, with no JSON parsing or canonicalization.
 function ghStageUploadRaw(base64, suggestedName) {
     ghUploadRaw = { content: base64 };
     ghUploadData = null;
