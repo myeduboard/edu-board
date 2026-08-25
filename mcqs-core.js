@@ -202,13 +202,20 @@ function aimcqGetPassageId(post) {
     return m._aimcq_passage_id != null ? String(m._aimcq_passage_id) : '';
 }
 
-// One option object → exactly { text, image } in that order (extras dropped).
+// One option object → { text, image[, image_width, image_height] } in that
+// order (other extras dropped). The figure-dimension keys are preserved
+// whenever present on the source option so exported options keep their
+// saved image size instead of falling back to the tool's default on
+// reimport.
 function aimcqCanonicalizeOption(opt) {
     if (!opt || typeof opt !== 'object') return { text: '', image: '' };
-    return {
+    var out = {
         text: opt.text != null ? opt.text : '',
         image: opt.image != null ? opt.image : ''
     };
+    if (opt.image_width != null) out.image_width = String(opt.image_width);
+    if (opt.image_height != null) out.image_height = String(opt.image_height);
+    return out;
 }
 
 // Which language is the PRIMARY one (its content lives in the base fields:
