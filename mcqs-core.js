@@ -202,20 +202,13 @@ function aimcqGetPassageId(post) {
     return m._aimcq_passage_id != null ? String(m._aimcq_passage_id) : '';
 }
 
-// One option object → { text, image[, image_width, image_height] } in that
-// order (other extras dropped). The figure-dimension keys are preserved
-// whenever present on the source option so exported options keep their
-// saved image size instead of falling back to the tool's default on
-// reimport.
+// One option object → exactly { text, image } in that order (extras dropped).
 function aimcqCanonicalizeOption(opt) {
     if (!opt || typeof opt !== 'object') return { text: '', image: '' };
-    var out = {
+    return {
         text: opt.text != null ? opt.text : '',
         image: opt.image != null ? opt.image : ''
     };
-    if (opt.image_width != null) out.image_width = String(opt.image_width);
-    if (opt.image_height != null) out.image_height = String(opt.image_height);
-    return out;
 }
 
 // Which language is the PRIMARY one (its content lives in the base fields:
@@ -6711,6 +6704,7 @@ function qbRenderSource() {
         card.dataset.si = si;
         card.dataset.pi = pi;
         card.innerHTML = `
+            <span class="qb-card-num src" title="Question ${pi + 1} in its source file">${pi + 1}</span>
             <span class="qb-card-dot" style="background:${color}"></span>
             <span class="qb-card-text">${escapeHtml(qbQuestionText(post))}</span>
             <button class="qb-card-add" title="Add to new quiz" ${inQuiz ? 'disabled' : ''}>
@@ -7341,44 +7335,12 @@ function aiDetailInstruction(level, pName) {
     return '';   // standard — no extra depth instruction
 }
 
-// Shared, standardized explanation format used for EVERY AI-generated
-// explanation in the Question Editor. This deliberately REPLACES whatever
-// format a pre-existing explanation used (plain text, <br>-separated
-// lines, etc.) so that all explanations — old and freshly regenerated —
-// converge on one professional, structured HTML shape: proper heading
-// hierarchy, real paragraphs, lists, and tables (only where genuinely
-// tabular). The tool's own rich-text editor uses h2/h3/h4 for
-// Heading/Subheading/Minor heading, so the AI is told to use that same
-// vocabulary (h3 for section headings, h4 for minor/step headings) for
-// consistency with what an editor would produce by hand.
-function aiExplanationFormatInstruction(pName) {
-    return 'EXPLANATION FORMAT (critical — ALWAYS use this structure; this OVERRIDES and REPLACES any pre-existing explanation\'s formatting): '
-        + 'build "explanation_html" as clean, semantic HTML using proper heading hierarchy, paragraphs, lists and tables — NEVER as a single block of text, and NEVER using <br> tags to fake paragraph, section, or step breaks (a <br> is only acceptable for a genuine mid-sentence line wrap inside one <p> or table cell, and is normally not needed at all). '
-        + 'If a pre-existing explanation is shown below, treat it ONLY as background on which facts/substance are already correct or already covered — completely ignore and discard its tags, layout, and structure; do not imitate its formatting in any way, even partially. '
-        + 'Allowed tags only: <h3> for main section headings, <h4> for minor/sub headings (including individual step headings), <p> for prose paragraphs, <ul>/<ol> with <li> for lists, <b>/<i> for emphasis inside text, and a full <table><thead><tr><th>...</th></tr></thead><tbody><tr><td>...</td></tr></tbody></table> for genuinely tabular data (e.g. comparing several values/quantities side by side) — add a table ONLY when the content is naturally tabular, not for ordinary prose. '
-        + 'MANDATORY CLASSIFICATION GATE — answer this BEFORE writing anything: "Does answering this specific question require ME to actually perform a numeric calculation using a formula/equation (e.g. arithmetic, algebra, a physics/chemistry numeric computation, a stated numeric derivation)?" '
-        + 'If the honest answer is NO — this covers general knowledge, general studies, biology, history, geography, civics/polity, current affairs, English/language, reasoning-without-arithmetic, and ALSO purely conceptual/theoretical/definitional maths, physics, or chemistry questions that only ask you to recall/identify/define something rather than calculate it — then you are in BRANCH B, and Branch B is the DEFAULT for most questions in this tool. '
-        + 'If the honest answer is YES — you actually have to compute a numeric result — then you are in BRANCH A. When in doubt, or if you are not certain a real calculation is required, choose BRANCH B. '
-        + 'BRANCH B (the default — use this unless the gate above is clearly YES): a <h3>Key Concept</h3> heading and any <h4>Step ...</h4> heading are FORBIDDEN — do not write them, not even one. Use exactly these three sections, in this order: (b1) an <h3>Correct Answer Explanation</h3> heading with <p> paragraphs (and a <ul>/<table> only if genuinely useful) that state the correct answer\'s substance and justify it conceptually; (b2) an <h3>Incorrect Options Analysis</h3> section — SKIP this section entirely (do not write its heading) if the options are CODE-TYPE rather than content-type (see CODE-TYPE OPTIONS EXCEPTION below); otherwise, for each of the OTHER (incorrect) options, one short <p> (or one <li> inside a single <ul>, one item per option) that names that option\'s own content/value directly and explains concretely why it is wrong or does not fit the question — refer to it ONLY by its actual text/value, never by its letter/label; (b3) an <h3>Important Points</h3> section with genuinely useful, closely-related facts for quick revision, formatted as a <ul>/<ol> or — where the facts are naturally parallel/comparable — a <table>. For example, for a question on the highest peak of a state, list the highest peaks of the other major states/regions in a table (columns like State | Peak | Height); for a formula-based conceptual question, list related formulas/units/constants; for a historical-date question, list a short related timeline of nearby events; for a classification question, list the other members of that classification. Keep this section genuinely informative and exam-useful, not filler. '
-        + 'CODE-TYPE OPTIONS EXCEPTION (part of Branch B): some questions — "arrange in correct order", "arrange in sequence", "match List-I with List-II", "select the correct code", assertion-reason (A/R) questions, "which of the statements above is/are correct" — give options that are just numeric/letter CODES referring back to the items already named in the question stem (e.g. "3, 1, 4, 2", "A-ii, B-iv, C-i, D-iii", "1 and 3 only", "(a) A, B, C are correct"), NOT independent, meaningful pieces of content in their own right. Detect this whenever the options themselves contain no real-world substance beyond numbers/letters/positions. For such questions: '
-        + '— SKIP (b2) "Incorrect Options Analysis" completely (do not write that heading at all) — there is nothing substantive to analyze in a wrong code/order/pairing on its own. '
-        + '— In (b1) "Correct Answer Explanation", justify the correct code/order/pairing directly — briefly explain WHY each item belongs at its position (e.g. why each date falls where it does in the sequence, or why each List-I entry matches its List-II counterpart), still without ever naming the option letter/code itself. '
-        + '— In (b3) "Important Points", do NOT merely restate or re-explain the same items already given in the question — instead ADD genuinely NEW, closely related facts that were NOT already listed in the question, for quick revision. Example: if the question already lists World Earth Day, World Ozone Day, World Wetlands Day and International Day for Biological Diversity, the Important Points section should list OTHER National/International Days related to the same theme (environment) that are NOT already in the question — with their dates — as a <ul> or a <table> (columns like Day | Date), giving the reader new information rather than a recap. '
-        + 'This exception applies ONLY to the (b2) skip and the (b3) new-facts requirement — (b1) Correct Answer Explanation is still always required. '
-        + 'BRANCH A (ONLY for a question that genuinely requires a numeric calculation): an "Incorrect Options Analysis" heading and an "Important Points" heading are FORBIDDEN here — do not write them. Use exactly these two sections, in order — (a1) a short <h3>Key Concept</h3> section (1-2 <p> sentences naming/recalling the concept, formula, or law this question depends on); (a2) an <h3>Step-by-Step Solution</h3> heading with one <h4>Step 1: ...</h4>, <h4>Step 2: ...</h4>, etc. minor-heading per step (each with its own <p> working directly beneath it, plus a <ul>/<table> only if it genuinely clarifies that step), ending with a closing <h4>Final Answer</h4> heading whose <p> states the resulting value. The step-by-step working and final answer are the complete explanation for this branch. '
-        + 'SELF-CHECK before finalizing: if the explanation contains a "Key Concept" or "Step N" heading, re-confirm the question truly required a numeric calculation — if not, DELETE those headings and rewrite using Branch B instead. If the explanation contains "Incorrect Options Analysis" or "Important Points" headings alongside step headings, that is an ERROR — remove one pair or the other so only one branch\'s sections remain. If the question\'s options are code-type (per the exception above) and the explanation still contains an "Incorrect Options Analysis" heading, DELETE it. If the "Important Points" section merely repeats items already given in the question instead of adding new related facts, REWRITE it with genuinely new information. '
-        + 'Never place an <h4> without its <h3> "Step-by-Step Solution" parent from Branch A, and never omit or reorder the sections required by whichever branch applies. '
-        + 'All heading text (including "Correct Answer Explanation", "Incorrect Options Analysis", "Important Points", "Key Concept", "Step", "Final Answer") must be translated into ' + pName + ' (the question\'s own language), matching the rest of the explanation.';
-}
-
-// Shared instruction: forces the step-by-step structure from
-// aiExplanationFormatInstruction() to actually be used (rather than being
-// left optional) when the "step-by-step for math" toggle is on. Applies
+// Shared instruction block for step-by-step math explanations. Applies
 // ONLY when the question is numerical/mathematical/quantitative in nature
 // (calculations, formulas, equations, numerical reasoning, physics/chem/
 // math problems) — plain factual or conceptual questions are unaffected.
 function aiStepsInstruction(pName) {
-    return `STEP-BY-STEP MATH SOLUTIONS (when applicable): re-apply the MANDATORY CLASSIFICATION GATE above. If — and ONLY if — the honest answer is YES (the question genuinely requires you to perform a numeric calculation), use BRANCH A (Key Concept + Step-by-Step Solution ONLY, no "Incorrect Options Analysis" / "Important Points"): one <h4>Step N: ...</h4> minor-heading per step (translate "Step" into ${pName} if ${pName} is not English) with that step's own <p> beneath it, never skipping a calculation, substitution, or logical link, ending with a closing <h4>Final Answer</h4> heading and <p> stating the resulting value/answer. Keep all math in LaTeX ($...$). If the honest answer is NO — including for conceptual/factual/definitional questions and questions that only recall a formula/law without computing a number — do NOT force artificial steps or a "Key Concept" heading; use BRANCH B (Correct Answer Explanation + Incorrect Options Analysis + Important Points) instead. This toggle does not override the classification gate — it only controls how thorough Branch A's steps are when Branch A genuinely applies.`;
+    return `STEP-BY-STEP MATH SOLUTIONS (when applicable): if — and ONLY if — the question is numerical/mathematical/quantitative (requires a calculation, formula, equation, or step-wise numerical/logical derivation), structure the explanation as clearly numbered steps instead of a dense paragraph: each step on its own line as "<p><b>Step 1:</b> ...</p>", "<p><b>Step 2:</b> ...</p>", etc. (translate the word "Step" into ${pName} if ${pName} is not English), ending with a final step that states the resulting value/answer. Keep all math in LaTeX ($...$). Steps must still obey the FORMAT RULE (fit within the pre-existing explanation's overall HTML container/structure where applicable) and the NO OPTION REFERENCES rule (no option letters in any step). For purely conceptual/factual/definitional questions with no calculation involved, do NOT force artificial steps — keep the existing explanation style.`;
 }
 
 function qeAiBuildPrompt(q, suggestIdx, wantSteps, detailLevel) {
@@ -7413,21 +7375,21 @@ function qeAiBuildPrompt(q, suggestIdx, wantSteps, detailLevel) {
 
     lines.push('');
     if ((q.explanation || '').trim()) {
-        lines.push('PRE-EXISTING EXPLANATION (raw HTML, FOR CONTENT REFERENCE ONLY — its formatting must NOT be reused, see FORMAT RULE below):');
+        lines.push('PRE-EXISTING EXPLANATION (raw HTML). THIS DEFINES THE REQUIRED OUTPUT FORMAT:');
         lines.push('-----BEGIN EXPLANATION HTML-----');
         lines.push(q.explanation);
         lines.push('-----END EXPLANATION HTML-----');
         lines.push('');
-        lines.push(`Your new explanation ("explanation_html") MUST be written entirely in ${pName} — the SAME language as the question — and MUST correctly justify the truly correct answer.`);
-        lines.push(aiExplanationFormatInstruction(pName));
-        lines.push('NO OPTION LETTER LABELS (critical): never mention option letters or labels (A/B/C/D), the word "option" / "विकल्प", or phrases like "Correct Answer: (X)" / "सही उत्तर: (X)" / "Option B is right" / "the other options are wrong" ANYWHERE in the explanation — including inside the "Incorrect Options Analysis" section. Refer to every answer, correct or incorrect, only by its actual text/value/content. If the pre-existing explanation above contains any letter-based option references or per-option elimination parts, rewrite them as substance-based statements (naming each option\'s actual text/value instead of its letter) inside the new structured format.');
+        lines.push(`FORMAT RULE (critical): your new explanation ("explanation_html") MUST be written entirely in ${pName} — the SAME language as the question and the pre-existing explanation above — and MUST replicate this pre-existing explanation's HTML format EXACTLY — same tags, same inline styles/classes, same structure and section order, bullet lists, tables, LaTeX delimiters, emphasis conventions, and approximate length. Change ONLY the substantive content so that it correctly justifies the truly correct answer.`);
+        lines.push('NO OPTION REFERENCES (critical): the explanation must NOT mention option letters or labels (A/B/C/D), the word "option" / "विकल्प", or phrases like "Correct Answer: (X)" / "सही उत्तर: (X)" / "Option B is right" / "the other options are wrong". Explain the answer\'s substance directly — state the actual answer content itself and justify it conceptually. If the pre-existing explanation contains any option references or per-option elimination parts, replace them with the equivalent substance-based statements (naming the actual answer text/value instead of its letter) while keeping every other aspect of the formatting identical. Do not add new sections that the sample does not have, and do not drop sections it does have.');
         if (wantSteps) lines.push(aiStepsInstruction(pName));
         const detailInstr = aiDetailInstruction(detailLevel, pName);
-        if (detailInstr) lines.push(detailInstr);
+        if (detailInstr) {
+            lines.push(detailInstr);
+            if (detailLevel === 'detailed') lines.push('LENGTH OVERRIDE: the EXPLANATION DEPTH requirement above takes precedence over the "approximate length" part of the FORMAT RULE — keep the sample\'s tags, styling and structural conventions, but expand the substance to the required depth even if that makes it much longer than the sample.');
+        }
     } else {
-        lines.push(`PRE-EXISTING EXPLANATION: (none).`);
-        lines.push(aiExplanationFormatInstruction(pName));
-        lines.push('NO OPTION LETTER LABELS (critical): never mention option letters or labels (A/B/C/D), the word "option" / "विकल्प", or phrases like "Correct Answer: (X)" / "सही उत्तर: (X)" anywhere in the explanation — including inside the "Incorrect Options Analysis" section. Refer to every answer, correct or incorrect, only by its actual text/value/content.');
+        lines.push(`PRE-EXISTING EXPLANATION: (none). Use this simple clean HTML format for the new explanation, written entirely in ${pName} (the question's own language): <p><b>concise statement of the correct answer's substance (the actual fact/value/concept — NOT its option letter)</b></p><p>step-by-step conceptual justification</p>. Do NOT reference option letters (A/B/C/D), the word "option" / "विकल्प", or phrases like "Correct Answer: (X)" / "सही उत्तर: (X)" anywhere in the explanation.`);
         if (wantSteps) lines.push(aiStepsInstruction(pName));
         const detailInstr2 = aiDetailInstruction(detailLevel, pName);
         if (detailInstr2) lines.push(detailInstr2);
@@ -7439,14 +7401,14 @@ function qeAiBuildPrompt(q, suggestIdx, wantSteps, detailLevel) {
         lines.push('QUESTION (HINDI): ' + (aiHtmlToPlain(q.hi.question) || '(empty)'));
         q.hi.options.forEach((o, i) => lines.push(`(${L(i)}) [HI] ${aiHtmlToPlain(o) || '(empty)'}`));
         if ((q.hi.explanation || '').trim()) {
-            lines.push('PRE-EXISTING HINDI EXPLANATION (raw HTML, FOR CONTENT REFERENCE ONLY — its formatting must NOT be reused). "explanation_html_hi" MUST be written entirely in HINDI and MUST follow the SAME structured EXPLANATION FORMAT given above (h3 section headings, h4 step/minor headings, p/ul/ol/table — headings translated into Hindi), completely ignoring this sample\'s own tags/structure. The same NO OPTION LETTER LABELS rule applies: no option letters (A/B/C/D), no \u0935\u093f\u0915\u0932\u094d\u092a/"option" mentions, no "\u0938\u0939\u0940 \u0909\u0924\u094d\u0924\u0930: (X)"-style lines — state and justify the actual answer substance in Hindi instead:');
+            lines.push('PRE-EXISTING HINDI EXPLANATION (raw HTML). "explanation_html_hi" MUST be written entirely in HINDI and MUST replicate THIS Hindi sample\'s exact HTML format (its tags, structure, styles, conventions — not the English sample\'s). The same NO OPTION REFERENCES rule applies: no option letters (A/B/C/D), no \u0935\u093f\u0915\u0932\u094d\u092a/"option" mentions, no "\u0938\u0939\u0940 \u0909\u0924\u094d\u0924\u0930: (X)"-style lines — state and justify the actual answer substance in Hindi instead:');
             lines.push('-----BEGIN HINDI EXPLANATION HTML-----');
             lines.push(q.hi.explanation);
             lines.push('-----END HINDI EXPLANATION HTML-----');
             if (wantSteps) lines.push(aiStepsInstruction('HINDI'));
             { const d = aiDetailInstruction(detailLevel, 'HINDI'); if (d) lines.push('For "explanation_html_hi": ' + d); }
         } else {
-            lines.push('PRE-EXISTING HINDI EXPLANATION: (none). Produce "explanation_html_hi" written entirely in Hindi, following the SAME structured EXPLANATION FORMAT given above (h3 section headings, h4 step/minor headings, p/ul/ol/table, headings translated into Hindi), with the same NO OPTION LETTER LABELS rule (no option letters, no विकल्प/"option" mentions).');
+            lines.push('PRE-EXISTING HINDI EXPLANATION: (none). Produce "explanation_html_hi" written entirely in Hindi, using the same HTML structure as your English explanation, with the same NO OPTION REFERENCES rule (no option letters, no विकल्प/"option" mentions).');
             if (wantSteps) lines.push(aiStepsInstruction('HINDI'));
             { const d = aiDetailInstruction(detailLevel, 'HINDI'); if (d) lines.push('For "explanation_html_hi": ' + d); }
         }
@@ -7458,8 +7420,8 @@ function qeAiBuildPrompt(q, suggestIdx, wantSteps, detailLevel) {
     lines.push('2. Decide the truly correct option (0-based index). If a [FIGURE] is essential and missing, reason from the text as best you can and lower your confidence.');
     lines.push('3. Compare your answer with the currently marked option.');
     lines.push(q.bilingual
-        ? '4. Write the new explanation(s) per the EXPLANATION FORMAT and NO OPTION LETTER LABELS rules above — English explanation in English, Hindi explanation in Hindi, BOTH using the same structured h3/h4/p/ul/ol/table format (never the pre-existing sample\'s own formatting), and neither mentioning option letters/labels. (Option letters MAY still appear in "reasoning" and "user_suggestion_verdict" — the restriction applies only to the explanation HTML fields.)'
-        : `4. Write the new explanation per the EXPLANATION FORMAT and NO OPTION LETTER LABELS rules above — entirely in ${pName}, using the structured h3/h4/p/ul/ol/table format (never the pre-existing sample's own formatting), with no option letters/labels mentioned. (Option letters MAY still appear in "reasoning" and "user_suggestion_verdict" — the restriction applies only to the explanation HTML field.)`);
+        ? '4. Write the new explanation(s) per the FORMAT RULE and NO OPTION REFERENCES rules above — English explanation in English, Hindi explanation in Hindi, each matching its own pre-existing sample\'s format, and neither mentioning option letters/labels. (Option letters MAY still appear in "reasoning" and "user_suggestion_verdict" — the restriction applies only to the explanation HTML fields.)'
+        : `4. Write the new explanation per the FORMAT RULE and NO OPTION REFERENCES rules above — entirely in ${pName}, matching the pre-existing sample's format, with no option letters/labels mentioned. (Option letters MAY still appear in "reasoning" and "user_suggestion_verdict" — the restriction applies only to the explanation HTML field.)`);
     lines.push('');
     lines.push('Respond with ONLY a single JSON object (no markdown fences, no commentary):');
     lines.push('{');
