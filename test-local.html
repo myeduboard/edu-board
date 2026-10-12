@@ -1,0 +1,30 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>AI MCQs JSON Tool — local test</title>
+  <style>
+    /* Simulate a "host page" so you can see the tool is self-contained. */
+    body { margin: 0; font-family: system-ui, sans-serif; }
+    .host-note { padding: 10px 16px; background:#111827; color:#e5e7eb; font-size:13px; }
+  </style>
+</head>
+<body>
+
+  <div class="host-note">Host page chrome (this bar belongs to the page, not the tool). The tool mounts below ↓</div>
+
+  <!-- Same structure as the production embed, but the loader is referenced
+       with a RELATIVE path so you can test the 3 files locally first. -->
+  <div class="mcqs-page-wrap">
+    <div id="mcqs-host" data-height="auto"></div>
+  </div>
+
+  <script src="./mcqs-tool.js"></script>
+
+  <!-- HOW TO RUN LOCALLY (a plain double-click uses file:// and the CDN
+       libraries may be blocked). Easiest: from this folder run
+           python3 -m http.server 8080
+       then open  http://localhost:8080/test-local.html  -->
+</body>
+</html>
