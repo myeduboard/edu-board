@@ -787,6 +787,14 @@ document.getElementById('btn-combine').addEventListener('click', async () => {
             posts = posts.concat(fd.posts);
         });
         combinedDataResult = { version: parsed[0].version||"1.7.0", export_type: parsed[0].export_type||"single", terms: Array.from(termsMap.values()), posts };
+        // Optional: overwrite imported terms with the file name / title entered above.
+        const cName = (document.getElementById('combine-out-filename')?.value || '').trim();
+        const cTitle = (document.getElementById('combine-out-title')?.value || '').trim();
+        if (cName || cTitle) {
+            aimcqApplyQuizTerm(combinedDataResult, cName, cTitle);
+            if (cTitle) combinedDataResult.quiz_title = cTitle;
+            termsMap.clear(); termsMap.set('x', 1);
+        }
         document.getElementById('combine-results-container').classList.remove('hidden');
         document.getElementById('combine-stats').textContent = `Merged ${parsed.length} files containing ${posts.length} total questions and ${termsMap.size} distinct terms.`;
         showToast("Combine Successful","Ready to download.","success");
@@ -796,7 +804,9 @@ document.getElementById('btn-combine').addEventListener('click', async () => {
 
 document.getElementById('btn-download-combined').addEventListener('click', () => {
     if (!combinedDataResult) return;
-    downloadJSON(combinedDataResult, `combined_quiz_data_${Date.now()}.json`);
+    let cn = (document.getElementById('combine-out-filename')?.value || '').trim();
+    if (cn && !/\.json$/i.test(cn)) cn += '.json';
+    downloadJSON(combinedDataResult, cn || `combined_quiz_data_${Date.now()}.json`);
 });
 
 // ==================== EDITOR LOGIC ====================
@@ -6792,6 +6802,8 @@ function qbBuildJson() {
     };
     const title = (document.getElementById('qb-quiz-title').value || '').trim();
     if (title) out.quiz_title = title;
+    // Overwrite the imported source terms with this quiz's own file name/title term.
+    aimcqApplyQuizTerm(out, document.getElementById('qb-filename').value, title);
     return out;
 }
 
@@ -9285,6 +9297,32 @@ function qxLangTermInfo(recs) {
     if (kinds.has('bi') || (kinds.has('en') && kinds.has('hi'))) return { language: 'English & Hindi', code: '01ENHI' };
     if (kinds.has('hi')) return { language: 'Hindi', code: '01HI' };
     return { language: 'English', code: '01EN' };
+}
+
+// Replace a quiz's imported terms with ONE term built from the export's file
+// name + quiz title, and point every question at it. Used by the Quiz Builder
+// and Combine JSON so the output isn't tied to the source files' terms.
+//   term.name = quiz title (falls back to the file name)
+//   term.slug = slug of the file name (falls back to the title)
+// Language label/code is detected from the questions themselves.
+function aimcqApplyQuizTerm(data, fileName, title) {
+    var base = String(fileName || '').trim().replace(/\.json$/i, '');
+    var name = String(title || '').trim() || base;
+    if (!name) return data;                       // nothing to overwrite with
+    var slug = qxSlugify(base || name);
+    var lang = aimcqResolveLanguages({ posts: data.posts || [] });
+    var term = { taxonomy: 'topic' };
+    if (lang && lang.valid) { term.language = lang.label; term.language_code = lang.normalizedCode; }
+    term.name = name;
+    term.slug = slug;
+    data.terms = [term];
+    data.posts = (data.posts || []).map(function (p) {
+        if (!p || typeof p !== 'object' || p.post_type === 'passage') return p;
+        var np = Object.assign({}, p);
+        np.taxonomies = { topic: [slug] };
+        return np;
+    });
+    return data;
 }
 
 function qxSlugify(name) {
