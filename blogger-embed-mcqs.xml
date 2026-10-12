@@ -1,0 +1,82 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE html>
+<!-- =====================================================================
+     AI MCQs JSON Tool — Blogger theme (full-page embed)
+     Mirrors the Smartboard setup: hides Blogger chrome and mounts the tool
+     full-width via a host <div>, with CSS + JS served from jsDelivr.
+
+     BEFORE USING: replace USER / REPO / VERSION in the loader URL below.
+     Use a release TAG (e.g. v1.0), not "main", so the CDN version is stable.
+     ===================================================================== -->
+<html b:css='false' b:defaultwidgetversion='2' b:layoutsversion='3' xmlns='http://www.w3.org/1999/xhtml' xmlns:b='http://www.google.com/gastrouts' xmlns:data='http://www.google.com/schema/data' xmlns:expr='http://www.google.com/schema/expr'>
+<head>
+  <meta charset='utf-8'/>
+  <title><data:blog.pageTitle/></title>
+  <meta content='width=device-width,initial-scale=1' name='viewport'/>
+
+  <!-- AI MCQs JSON Tool — single loader; it pulls mcqs-core.js + mcqs-tool.css
+       from the same jsDelivr folder and injects all required libraries. -->
+  <script expr:src='&quot;https://cdn.jsdelivr.net/gh/USER/REPO@VERSION/mcqs-tool.js&quot;' type='text/javascript'/>
+
+  <b:if cond='data:blog.metaDescription'>
+    <meta expr:content='data:blog.metaDescription' name='description'/>
+  </b:if>
+
+  <b:skin><![CDATA[
+    /* ===== Reset Blogger frame so the tool can sit full-width ===== */
+    body, html { margin:0; padding:0; width:100%; min-height:100vh; display:flex; flex-direction:column; }
+
+    /* ===== Hide default Blogger elements ===== */
+    .navbar, .header-outer, .footer-outer, .post-title, .page-header,
+    .post-footer, .blog-pager { display:none !important; }
+
+    /* ===== MCQ tool embed container =====
+       Height-flexible: the wrap hugs the tool's own content height, so any
+       homepage content placed below it flows immediately after the tool
+       (no flex-grow / forced viewport height = no white gap). */
+    .mcqs-page-wrap { position:relative; width:100%; }
+    #mcqs-host { display:block; width:100%; }
+  ]]></b:skin>
+
+  <b:if cond='data:view.isHomepage'>
+    <style>#main-widget-area { display:none !important; }</style>
+  <b:else/>
+    <style>#homepage-content { display:none !important; }</style>
+  </b:if>
+</head>
+
+<body>
+
+  <!-- No min-height:100vh here — the section is as tall as its content, so
+       anything you add below the tool sits right under it with no gap. -->
+  <div id='homepage-content'>
+    <div class='mcqs-page-wrap'>
+      <!-- The loader also recognises id="smartboard-host" if you reuse your
+           existing Smartboard layout; "mcqs-host" is the clean default. -->
+      <div data-height='auto' id='mcqs-host'></div>
+    </div>
+  </div>
+
+  <div id='main-widget-area'>
+    <b:section id='main' showaddelement='yes'>
+      <b:widget id='Blog1' locked='true' title='Blog Posts' type='Blog'>
+        <b:includable id='main'>
+          <b:loop values='data:posts' var='post'>
+            <div class='app-container'><data:post.body/></div>
+          </b:loop>
+        </b:includable>
+        <b:includable id='aboutPostAuthor'/>
+        <b:includable id='commentPicker'/>
+        <b:includable id='postPagination'/>
+        <b:includable id='feedLinks'/>
+        <b:includable id='postCommentsAndAd'/>
+        <b:includable id='backlinks'/>
+        <b:includable id='comments'/>
+        <b:includable id='icons'/>
+        <b:includable id='shareButtons'/>
+      </b:widget>
+    </b:section>
+  </div>
+
+</body>
+</html>
