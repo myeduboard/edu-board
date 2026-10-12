@@ -125,6 +125,16 @@
                 <p class="text-sm font-semibold text-gray-700 mb-2">Selected Files:</p>
                 <div id="combine-file-list" class="flex flex-wrap gap-2 max-h-32 overflow-y-auto custom-scrollbar"></div>
             </div>
+            <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div>
+                    <label class="fb-label">Output file name <span class="text-gray-400">(optional)</span></label>
+                    <input type="text" id="combine-out-filename" class="fb-input" placeholder="combined-quiz.json">
+                </div>
+                <div>
+                    <label class="fb-label">Quiz title <span class="text-gray-400">(optional — replaces imported terms)</span></label>
+                    <input type="text" id="combine-out-title" class="fb-input" placeholder="My Combined Quiz">
+                </div>
+            </div>
             <button id="btn-combine" class="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-semibold py-3 px-4 rounded-xl shadow-sm transition-all flex items-center justify-center gap-2">
                 <i data-lucide="combine" class="w-5 h-5"></i> Combine JSONs
             </button>
