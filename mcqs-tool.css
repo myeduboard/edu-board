@@ -712,12 +712,10 @@
         .qb-card.in-new { border-color: #99f6e4; background: #f0fdfa; }
         .qb-card-dot { width: 9px; height: 9px; border-radius: 50%; flex-shrink: 0; }
         .qb-card-num {
-            flex-shrink: 0; min-width: 20px; height: 20px; padding: 0 5px; box-sizing: border-box; border-radius: 6px;
+            flex-shrink: 0; width: 20px; height: 20px; border-radius: 6px;
             background: #14b8a6; color: #fff; font-size: 11px; font-weight: 700;
             display: flex; align-items: center; justify-content: center;
         }
-        .qb-card-num.src { background: #e2e8f0; color: #475569; }
-        .qb-card.picked .qb-card-num.src { background: #cbd5e1; }
         .qb-card-text {
             flex: 1; min-width: 0; font-size: 12px; color: #1e293b;
             overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
@@ -1486,3 +1484,58 @@
     border: 1px solid #d1d5db; padding: 5px 10px; text-align: left; vertical-align: top;
 }
 .qx-prev-q table th, .qx-prev-katex table th { background: #f3f4f6; font-weight: 700; }
+
+
+/* ===== SVG figures (Figure Updater, editors) ===== */
+.fig-slot-btnrow { display: flex; gap: 6px; }
+.fig-slot-btnrow .fig-slot-btn { width: auto; flex: 1 1 0; min-width: 0; }
+.fig-slot-btn-svg { background: #fff; color: #047857; border-color: #6ee7b7; }
+.fig-slot-btn-svg:hover { background: #ecfdf5; }
+.fig-slot.drag-active { border-color: #10b981; background: #ecfdf5; border-style: solid; }
+.fig-slot-svgprev {
+    display: flex; align-items: center; justify-content: center;
+    padding: 4px; overflow: hidden; height: 96px;
+}
+.fig-slot-svgprev svg { max-width: 100%; max-height: 86px; }
+.fig-slot-status.svg { background: #d1fae5; color: #047857; }
+.fig-preview-opt-svg { display: inline-block; line-height: 0; max-width: 100%; }
+.fig-preview-opt-svg svg { max-width: 100%; }
+.fig-upload-svg { border-color: #6ee7b7; background: #f0fdf9; }
+.fig-upload-svg:hover { border-color: #10b981; background: #ecfdf5; }
+.fig-svg-pickfile {
+    margin-top: 8px; font-size: 11px; font-weight: 700; color: #047857;
+    background: #fff; border: 1px solid #6ee7b7; border-radius: 6px; padding: 3px 10px; cursor: pointer;
+}
+.fig-svg-pickfile:hover { background: #d1fae5; }
+
+/* SVG-only mode: no PDF stage, no quick-crop card */
+.fig-svgonly-bar { display: none; align-items: center; gap: 10px; flex-wrap: wrap;
+    background: #ecfdf5; border: 1px solid #a7f3d0; border-radius: 10px; padding: 8px 12px; }
+#fig-workspace.fig-svg-only .fig-svgonly-bar { display: flex; }
+#fig-workspace.fig-svg-only #fig-pdf-stage-wrap,
+#fig-workspace.fig-svg-only #fig-quick-card { display: none; }
+
+/* SVG dialog */
+.fig-svg-body { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; padding: 16px 20px; overflow-y: auto; min-height: 0; }
+@media (max-width: 720px) { .fig-svg-body { grid-template-columns: 1fr; } }
+.fig-svg-col { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+.fig-svg-row { display: flex; align-items: center; gap: 8px; }
+.fig-svg-code {
+    width: 100%; min-height: 250px; flex: 1; resize: vertical;
+    font-family: 'Fira Mono', ui-monospace, monospace; font-size: 11.5px; line-height: 1.45;
+    border: 1px solid #cbd5e1; border-radius: 8px; padding: 10px; background: #0f172a; color: #e2e8f0;
+}
+.fig-svg-code:focus { outline: 2px solid #6366f1; outline-offset: 0; }
+.fig-svg-prev {
+    min-height: 200px; max-height: 280px; overflow: auto; display: flex; align-items: center; justify-content: center;
+    border: 1px dashed #cbd5e1; border-radius: 8px; padding: 10px;
+    background-color: #fff;
+    background-image: linear-gradient(45deg,#f1f5f9 25%,transparent 25%,transparent 75%,#f1f5f9 75%),
+                      linear-gradient(45deg,#f1f5f9 25%,transparent 25%,transparent 75%,#f1f5f9 75%);
+    background-size: 16px 16px; background-position: 0 0, 8px 8px;
+}
+.fig-svg-empty { font-size: 12px; color: #94a3b8; }
+.fig-svg-ok   { font-size: 12px; font-weight: 700; color: #047857; }
+.fig-svg-note { font-size: 11.5px; color: #475569; }
+.fig-svg-err  { font-size: 12px; font-weight: 600; color: #b91c1c; background: #fef2f2; border: 1px solid #fecaca; border-radius: 8px; padding: 8px 10px; }
+.fig-svg-warn { font-size: 11.5px; color: #b45309; background: #fffbeb; border: 1px solid #fde68a; border-radius: 8px; padding: 6px 10px; margin-top: 4px; }
