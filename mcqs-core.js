@@ -592,7 +592,9 @@ try {
 
 function stripHtmlTags(str) {
     if (!str) return '';
-    return String(str).replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+    // Inline <svg> drawings carry <text>/<title> labels that must never leak
+    // into titles, search or "(no title)" checks — drop the whole block first.
+    return String(str).replace(/<svg[\s\S]*?<\/svg>/gi, ' ').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
 }
 
 function escapeHtml(str) {
@@ -787,14 +789,6 @@ document.getElementById('btn-combine').addEventListener('click', async () => {
             posts = posts.concat(fd.posts);
         });
         combinedDataResult = { version: parsed[0].version||"1.7.0", export_type: parsed[0].export_type||"single", terms: Array.from(termsMap.values()), posts };
-        // Optional: overwrite imported terms with the file name / title entered above.
-        const cName = (document.getElementById('combine-out-filename')?.value || '').trim();
-        const cTitle = (document.getElementById('combine-out-title')?.value || '').trim();
-        if (cName || cTitle) {
-            aimcqApplyQuizTerm(combinedDataResult, cName, cTitle);
-            if (cTitle) combinedDataResult.quiz_title = cTitle;
-            termsMap.clear(); termsMap.set('x', 1);
-        }
         document.getElementById('combine-results-container').classList.remove('hidden');
         document.getElementById('combine-stats').textContent = `Merged ${parsed.length} files containing ${posts.length} total questions and ${termsMap.size} distinct terms.`;
         showToast("Combine Successful","Ready to download.","success");
@@ -804,9 +798,7 @@ document.getElementById('btn-combine').addEventListener('click', async () => {
 
 document.getElementById('btn-download-combined').addEventListener('click', () => {
     if (!combinedDataResult) return;
-    let cn = (document.getElementById('combine-out-filename')?.value || '').trim();
-    if (cn && !/\.json$/i.test(cn)) cn += '.json';
-    downloadJSON(combinedDataResult, cn || `combined_quiz_data_${Date.now()}.json`);
+    downloadJSON(combinedDataResult, `combined_quiz_data_${Date.now()}.json`);
 });
 
 // ==================== EDITOR LOGIC ====================
@@ -1164,7 +1156,8 @@ function qfvSanitizeHtml(html) {
     let node;
     while (node = walker.nextNode()) {
         const tag = node.tagName.toLowerCase();
-        if (tag === 'script' || tag === 'style' || tag === 'iframe' || tag === 'object' || tag === 'embed') {
+        if (tag === 'script' || tag === 'style' || tag === 'iframe' || tag === 'object' || tag === 'embed' ||
+            tag === 'foreignobject') {
             toRemove.push(node);
             continue;
         }
@@ -1196,6 +1189,7 @@ function qfvHighlightInHtml(html, query) {
         if (!parent) return;
         const tag = parent.tagName ? parent.tagName.toLowerCase() : '';
         if (tag === 'mark' || tag === 'script' || tag === 'style') return;
+        if (parent.closest && parent.closest('svg')) return;   // keep drawings intact
         const txt = tn.nodeValue;
         if (!re.test(txt)) { re.lastIndex = 0; return; }
         re.lastIndex = 0;
@@ -1758,6 +1752,8 @@ function renderKatex(el) {
                 ],
                 throwOnError: false,
                 strict: false,
+                // never typeset "$…$" that happens to sit in an SVG label
+                ignoredTags: ['script', 'noscript', 'style', 'textarea', 'pre', 'code', 'option', 'svg'],
             });
         } catch(e) {}
     } else {
@@ -1959,6 +1955,7 @@ function buildRichEditor(wrap) {
         <button type="button" class="re-tool-btn re-tool-image" title="Insert image URL">
           <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="M21 15l-5-5L5 21"/></svg>
         </button>
+        <button type="button" class="re-tool-btn re-tool-svg" title="Insert SVG (paste code or import an .svg file)" style="font-size:9.5px;font-weight:800;letter-spacing:-0.3px">SVG</button>
         <button type="button" class="re-tool-btn re-tool-table" title="Insert table">
           <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18M3 15h18M9 3v18M15 3v18"/></svg>
         </button>
@@ -2132,6 +2129,11 @@ function buildRichEditor(wrap) {
         compose.focus();
         const url = prompt('Image URL:', 'https://');
         if (url) document.execCommand('insertHTML', false, `<img src="${url}" alt="image" style="max-width:100%">`);
+    });
+
+    toolbar.querySelector('.re-tool-svg').addEventListener('mousedown', e => {
+        e.preventDefault();
+        svgInsertIntoEditable(compose, true);
     });
 
     // LaTeX dropdown toggle (lives in topbar, not toolbar)
@@ -2749,6 +2751,8 @@ function renderOptionRows(containerId, options, correctAnswers, lang) {
                     <button type="button" class="opt-tb-btn" data-cmd="superscript" title="Superscript" style="font-size:9.5px;letter-spacing:-0.5px">X²</button>
                     <button type="button" class="opt-tb-btn" data-cmd="subscript" title="Subscript" style="font-size:9.5px;letter-spacing:-0.5px">X₂</button>
                     <div class="opt-tb-sep"></div>
+                    <button type="button" class="opt-tb-btn opt-tb-svg" title="Insert SVG (paste code or import an .svg file)" style="font-size:9px;font-weight:800;letter-spacing:-0.3px">SVG</button>
+                    <div class="opt-tb-sep"></div>
                     <div class="opt-latex-wrap">
                         <button type="button" class="opt-latex-btn" title="Insert LaTeX encloser">∑ LaTeX</button>
                         <div class="opt-latex-drop">
@@ -2790,6 +2794,13 @@ function renderOptionRows(containerId, options, correctAnswers, lang) {
         // Update toolbar active states on selection change
         compose.addEventListener('keyup',   () => updateOptToolbarState(toolbar, compose));
         compose.addEventListener('mouseup', () => updateOptToolbarState(toolbar, compose));
+
+        // SVG insert (inline code in the option text)
+        toolbar.querySelector('.opt-tb-svg').addEventListener('mousedown', e => {
+            e.preventDefault();
+            e.stopPropagation();
+            svgInsertIntoEditable(compose, false);
+        });
 
         // LaTeX toggle
         const latexBtn  = toolbar.querySelector('.opt-latex-btn');
@@ -2936,10 +2947,344 @@ document.addEventListener('keydown', e => { if (e.key === 'Escape') closeQEditor
 //  - Save the JSON straight back to the linked Drive file (PATCH)
 // ============================================================
 
+// ============================================================
+// ==================== SVG SUPPORT (shared) ==================
+// ============================================================
+// SVG figures can be pasted as code or imported from a .svg file and are
+// written into the quiz JSON AS INLINE SVG MARKUP (question text / option
+// text) — never as an uploaded image. No image hosting is needed for them.
+//
+// Every SVG is sanitised first (it ends up inside the quiz page's DOM):
+//   * only an allow-list of drawing elements survives (no <script>,
+//     <foreignObject>, animation/<set>, <iframe>, ...)
+//   * on* handlers, javascript: values and external links are removed
+//   * <style> rules are inlined onto the elements (so Illustrator/Inkscape
+//     exports keep their look) and then dropped, so nothing can leak CSS
+//     into the host page
+//   * ids are re-scoped to a unique prefix on output, so several SVGs on
+//     one page (e.g. four options) never clash over gradient/clip ids.
+var SVG_NS = 'http://www.w3.org/2000/svg';
+var SVG_ALLOWED_TAGS = ('svg g defs symbol use path rect circle ellipse line polyline polygon text tspan textpath ' +
+    'title desc lineargradient radialgradient stop pattern clippath mask marker image switch filter ' +
+    'feblend fecolormatrix fecomponenttransfer fecomposite feconvolvematrix fediffuselighting fedisplacementmap ' +
+    'fedistantlight fedropshadow feflood fefunca fefuncb fefuncg fefuncr fegaussianblur feimage femerge femergenode ' +
+    'femorphology feoffset fepointlight fespecularlighting fespotlight fetile feturbulence')
+    .split(' ').reduce(function (m, t) { m[t] = 1; return m; }, {});
+var SVG_MAX_BYTES = 1500000;      // hard limit — a bigger "SVG" is almost certainly a mistake
+var SVG_WARN_BYTES = 150000;      // soft warning — JSON gets heavy
+
+// Pull the <svg>…  source out of whatever was pasted (plain markup, an XML
+// file with prolog/doctype/comments, or a data:image/svg+xml URI).
+function svgExtractSource(raw) {
+    var t = String(raw == null ? '' : raw).trim();
+    if (!t) return '';
+    var m = t.match(/^data:image\/svg\+xml([^,]*),([\s\S]*)$/i);
+    if (m) {
+        try {
+            if (/;base64/i.test(m[1])) {
+                var bin = atob(m[2].replace(/\s/g, ''));
+                try { t = decodeURIComponent(escape(bin)); } catch (e) { t = bin; }
+            } else {
+                t = decodeURIComponent(m[2]);
+            }
+        } catch (e) { /* keep t as-is */ }
+    }
+    var i = t.search(/<svg[\s>\/]/i);
+    return i < 0 ? '' : t.slice(i);
+}
+
+// "12", "12px", "9pt", "2in" … → CSS px. null for %, auto, missing, <= 0.
+function svgParseLen(v) {
+    var m = String(v == null ? '' : v).trim()
+        .match(/^([+-]?(?:\d+\.?\d*|\.\d+)(?:e[+-]?\d+)?)\s*(px|pt|pc|in|cm|mm|em|rem)?$/i);
+    if (!m) return null;
+    var n = parseFloat(m[1]);
+    if (!(n > 0)) return null;
+    var f = { px: 1, pt: 96 / 72, pc: 16, 'in': 96, cm: 96 / 2.54, mm: 96 / 25.4, em: 16, rem: 16 }[(m[2] || 'px').toLowerCase()];
+    return n * f;
+}
+
+// Split a CSS declaration list on ';' while respecting (...) and quotes.
+function svgSplitDecls(css) {
+    var out = [], cur = '', depth = 0, q = '';
+    String(css || '').split('').forEach(function (ch) {
+        if (q) { cur += ch; if (ch === q) q = ''; return; }
+        if (ch === '"' || ch === "'") { q = ch; cur += ch; return; }
+        if (ch === '(') depth++;
+        if (ch === ')') depth = Math.max(0, depth - 1);
+        if (ch === ';' && depth === 0) { out.push(cur); cur = ''; return; }
+        cur += ch;
+    });
+    if (cur.trim()) out.push(cur);
+    return out;
+}
+
+// Keep only safe declarations of a style="" value / CSS rule body.
+function svgCleanStyleText(css, removed) {
+    var out = [];
+    svgSplitDecls(css).forEach(function (d) {
+        var i = d.indexOf(':');
+        if (i < 1) return;
+        var prop = d.slice(0, i).trim().toLowerCase();
+        var val = d.slice(i + 1).trim();
+        if (!prop || !val) return;
+        if (prop === 'position' || prop === 'z-index' || prop === 'behavior' || prop === '-moz-binding') {
+            removed.push('style:' + prop); return;
+        }
+        if (/expression\s*\(|javascript:|vbscript:|@import/i.test(val)) { removed.push('unsafe style'); return; }
+        var urls = val.match(/url\(\s*(?:'[^']*'|"[^"]*"|[^)]*)\s*\)/gi) || [];
+        var bad = urls.some(function (u) {
+            var inner = u.replace(/^url\(\s*['"]?/i, '').replace(/['"]?\s*\)$/, '').trim();
+            return !(inner.charAt(0) === '#' || /^data:image\/(png|jpe?g|gif|webp);base64,/i.test(inner));
+        });
+        if (bad) { removed.push('external url()'); return; }
+        out.push(prop + ':' + val);
+    });
+    return out.join(';');
+}
+
+// Apply the <style> sheet's rules as inline style="" on the matching
+// elements (document order, inline style still wins), so the <style>
+// element itself can be discarded.
+function svgInlineCss(root, css) {
+    var rules = [];
+    var host = document.createElement('style');
+    host.setAttribute('media', 'not all');           // never affects the page
+    host.textContent = css;
+    document.head.appendChild(host);
+    try {
+        var list = host.sheet ? host.sheet.cssRules : [];
+        for (var i = 0; i < list.length; i++) {
+            var r = list[i];
+            if (r && r.selectorText && r.style) rules.push({ sel: r.selectorText, css: r.style.cssText });
+        }
+    } catch (e) { /* unreadable sheet — nothing to inline */ }
+    host.remove();
+
+    var perEl = new Map();
+    rules.forEach(function (r) {
+        var els = [];
+        try {
+            els = Array.prototype.slice.call(root.querySelectorAll(r.sel));
+            if (root.matches(r.sel)) els.unshift(root);
+        } catch (e) { return; }                       // selector we can't evaluate
+        els.forEach(function (el) {
+            if (!perEl.has(el)) perEl.set(el, []);
+            perEl.get(el).push(r.css);
+        });
+    });
+    perEl.forEach(function (decls, el) {
+        var own = el.getAttribute('style') || '';
+        el.setAttribute('style', decls.join(';') + ';' + own);
+    });
+}
+
+// Give every id inside an SVG element a fresh unique prefix and rewrite
+// url(#id) / href="#id" references to match.
+function svgScopeIds(root) {
+    var els = [root].concat(Array.prototype.slice.call(root.querySelectorAll('*')));
+    var map = {}, any = false;
+    var prefix = 'sv' + Math.random().toString(36).slice(2, 8) + '-';
+    els.forEach(function (el) {
+        var id = el.getAttribute('id');
+        if (!id) return;
+        var base = id.replace(/^sv[a-z0-9]{6}-/, '');   // don't stack prefixes on re-save
+        map[id] = prefix + base;
+        any = true;
+    });
+    if (!any) return;
+    var urlRe = /url\(\s*(['"]?)#([^)'"\s]+)\1\s*\)/g;
+    els.forEach(function (el) {
+        Array.prototype.slice.call(el.attributes).forEach(function (a) {
+            var n = a.name.toLowerCase(), v = a.value;
+            if (n === 'id') { if (map[v]) el.setAttribute('id', map[v]); return; }
+            if ((n === 'href' || n === 'xlink:href') && v.charAt(0) === '#') {
+                if (map[v.slice(1)]) a.value = '#' + map[v.slice(1)];
+                return;
+            }
+            if (v.indexOf('url(') > -1) {
+                a.value = v.replace(urlRe, function (m0, q, id) {
+                    return map[id] ? 'url(#' + map[id] + ')' : m0;
+                });
+            }
+        });
+    });
+}
+
+// Sanitise pasted / imported SVG code.
+//   → { ok, svg, w, h, hasNatural, removed[], bytes, error }
+// `svg` is a compact, safe <svg>…</svg> string WITHOUT width/height (the
+// caller sizes it with svgSized()); w/h are its natural size in px.
+function svgSanitize(raw) {
+    var res = { ok: false, svg: '', w: 0, h: 0, hasNatural: false, removed: [], bytes: 0, error: '' };
+    var src = svgExtractSource(raw);
+    if (!src) { res.error = 'No <svg> element found. Paste the full SVG code (starting with <svg …>).'; return res; }
+
+    // Parsed in an inert <template>: nothing loads or runs while we clean it.
+    var tpl = document.createElement('template');
+    tpl.innerHTML = src;
+    var root = tpl.content.querySelector('svg');
+    if (!root) { res.error = 'Could not read that SVG — the markup looks broken.'; return res; }
+
+    // 1) <style> → inline
+    var css = '';
+    root.querySelectorAll('style').forEach(function (s) { css += '\n' + s.textContent; });
+    if (css.trim()) { try { svgInlineCss(root, css); } catch (e) { res.removed.push('style (could not inline)'); } }
+
+    // 2) elements: allow-list only (anchors are unwrapped, not dropped)
+    Array.prototype.slice.call(root.querySelectorAll('*')).forEach(function (el) {
+        if (!root.contains(el) || el === root) return;
+        var tag = el.localName.toLowerCase();
+        if (el.namespaceURI === SVG_NS && tag === 'a') {
+            while (el.firstChild) el.parentNode.insertBefore(el.firstChild, el);
+            el.remove(); return;
+        }
+        if (tag === 'style' && el.namespaceURI === SVG_NS) { el.remove(); return; }
+        if (el.namespaceURI !== SVG_NS || !SVG_ALLOWED_TAGS[tag]) {
+            res.removed.push(tag); el.remove();
+        }
+    });
+
+    // 3) attributes
+    [root].concat(Array.prototype.slice.call(root.querySelectorAll('*'))).forEach(function (el) {
+        var tag = el.localName.toLowerCase();
+        Array.prototype.slice.call(el.attributes).forEach(function (a) {
+            var n = a.name.toLowerCase(), v = a.value, drop = false, note = '';
+            if (n.indexOf('on') === 0) { drop = true; note = 'event handlers'; }
+            else if (n === 'class') { drop = true; }
+            else if (n.indexOf(':') > -1 && !/^(xlink|xml):/.test(n)) { drop = true; }  // inkscape:/sodipodi:/xmlns:*
+            else if (n === 'href' || n === 'xlink:href') {
+                var tv = v.trim();
+                var internal = tv.charAt(0) === '#';
+                var okExt = tag === 'image' &&
+                    (/^https?:\/\//i.test(tv) || /^data:image\/(png|jpe?g|gif|webp);base64,/i.test(tv));
+                if (!internal && !okExt) { drop = true; note = 'external/unsafe links'; }
+            }
+            else if (n === 'style') {
+                var c = svgCleanStyleText(v, res.removed);
+                if (c) el.setAttribute('style', c); else el.removeAttribute('style');
+                return;
+            }
+            else if (/javascript:|vbscript:|data:text\/html/i.test(v)) { drop = true; note = 'unsafe values'; }
+            if (drop) { el.removeAttribute(a.name); if (note) res.removed.push(note); }
+        });
+    });
+
+    // 3a) <use>/<image> whose link was stripped have nothing left to draw
+    Array.prototype.slice.call(root.querySelectorAll('use, image')).forEach(function (el) {
+        if (!el.hasAttribute('href') && !el.hasAttribute('xlink:href')) el.remove();
+    });
+
+    // 3b) drop comments / processing instructions; collapse indentation
+    var tw = document.createTreeWalker(root, NodeFilter.SHOW_COMMENT | NodeFilter.SHOW_TEXT);
+    var junk = [], n;
+    while ((n = tw.nextNode())) {
+        if (n.nodeType === 8) { junk.push(n); continue; }
+        if (/^\s*$/.test(n.nodeValue) && /\n/.test(n.nodeValue)) {
+            var p = n.parentNode && n.parentNode.localName ? n.parentNode.localName.toLowerCase() : '';
+            if (p !== 'text' && p !== 'tspan' && p !== 'textpath') junk.push(n);
+        }
+    }
+    junk.forEach(function (x) { x.remove(); });
+
+    // 4) natural size + viewBox
+    var vb = null;
+    var vbp = (root.getAttribute('viewBox') || '').trim().split(/[\s,]+/).map(Number);
+    if (vbp.length === 4 && vbp.every(isFinite) && vbp[2] > 0 && vbp[3] > 0) vb = { w: vbp[2], h: vbp[3] };
+    var aw = svgParseLen(root.getAttribute('width')), ah = svgParseLen(root.getAttribute('height'));
+    var w = 0, h = 0;
+    if (aw && ah) { w = aw; h = ah; }
+    else if (vb) {
+        if (aw) { w = aw; h = aw * vb.h / vb.w; }
+        else if (ah) { h = ah; w = ah * vb.w / vb.h; }
+        else { w = vb.w; h = vb.h; }
+    } else if (aw || ah) { w = aw || ah; h = ah || aw; }
+
+    if (!vb && w && h) {
+        root.setAttribute('viewBox', '0 0 ' + Math.round(w * 100) / 100 + ' ' + Math.round(h * 100) / 100);
+        vb = { w: w, h: h };
+    }
+    if (!vb) {
+        // No viewBox and no usable width/height: measure the drawing.
+        var holder = document.createElement('div');
+        holder.style.cssText = 'position:absolute;left:-99999px;top:0;width:0;height:0;overflow:hidden;visibility:hidden';
+        document.body.appendChild(holder);
+        try {
+            holder.appendChild(root);
+            var bb = root.getBBox();
+            if (bb && bb.width > 0 && bb.height > 0) {
+                root.setAttribute('viewBox', [bb.x, bb.y, bb.width, bb.height]
+                    .map(function (z) { return Math.round(z * 100) / 100; }).join(' '));
+                w = bb.width; h = bb.height; vb = { w: w, h: h };
+            }
+        } catch (e) { /* not measurable */ }
+        holder.remove();
+    }
+    res.hasNatural = !!(w && h);
+    res.w = res.hasNatural ? Math.max(1, Math.round(w)) : 0;
+    res.h = res.hasNatural ? Math.max(1, Math.round(h)) : 0;
+
+    root.removeAttribute('width');
+    root.removeAttribute('height');
+    ['version', 'baseProfile', 'xml:space', 'enable-background'].forEach(function (a) { root.removeAttribute(a); });
+    root.setAttribute('xmlns', SVG_NS);
+    if (!root.hasAttribute('role')) root.setAttribute('role', 'img');
+
+    res.svg = root.outerHTML;
+    res.bytes = res.svg.length;
+    res.removed = res.removed.filter(function (x, i, arr) { return arr.indexOf(x) === i; });
+    if (res.bytes > SVG_MAX_BYTES) {
+        res.error = 'This SVG is ' + Math.round(res.bytes / 1024) + ' KB — too large to embed in the quiz JSON (limit ' +
+            Math.round(SVG_MAX_BYTES / 1024) + ' KB). Simplify/optimise it first (e.g. with SVGO).';
+        return res;
+    }
+    if (!root.querySelector('*')) { res.error = 'That SVG has no drawing content.'; return res; }
+    res.ok = true;
+    return res;
+}
+
+// Return an <svg> string sized for display: width/height attributes (when
+// w & h are given) + a responsive style, and freshly scoped ids.
+//   opts.style — replaces the default 'max-width:100%;height:auto;'
+function svgSized(svgStr, w, h, opts) {
+    opts = opts || {};
+    if (!svgStr) return '';
+    var tpl = document.createElement('template');
+    tpl.innerHTML = svgStr;
+    var el = tpl.content.querySelector('svg');
+    if (!el) return '';
+    if (w > 0 && h > 0) { el.setAttribute('width', String(Math.round(w))); el.setAttribute('height', String(Math.round(h))); }
+    else { el.removeAttribute('width'); el.removeAttribute('height'); }
+    var st = (el.getAttribute('style') || '')
+        .replace(/(^|;)\s*(max-width|max-height|width|height|display)\s*:[^;]*/gi, '$1').replace(/^;+/, '');
+    var add = opts.style != null ? opts.style
+        : ('max-width:100%;' + (el.hasAttribute('viewBox') ? 'height:auto;' : ''));
+    el.setAttribute('style', st + (st && !/;\s*$/.test(st) ? ';' : '') + add);
+    if (opts.noScope !== true) svgScopeIds(el);
+    return el.outerHTML;
+}
+
+// Does a piece of HTML contain an inline <svg>?
+function svgHasInline(html) { return /<svg[\s>\/]/i.test(String(html || '')); }
+// Strip <svg>…</svg> blocks (used so labels inside drawings never leak into titles/search).
+function svgStripBlocks(html) { return String(html || '').replace(/<svg[\s\S]*?<\/svg>/gi, ' '); }
+
 const FIG_IMG_DEFAULT_W = 141;
 const FIG_IMG_DEFAULT_H = 130;
 // CSS class the aimcq theme uses to recognise question figures.
 const FIG_IMG_CLASS = 'aimcq-question-image';
+// Wrapper class for an inline-SVG question figure (the SVG counterpart of
+// the <img class="aimcq-question-image"> tag).
+const FIG_QSVG_CLASS = 'aimcq-question-svg';
+
+// Matches the question's existing figure — a raster <img> OR an inline-SVG
+// wrapper — so re-applying replaces/moves it instead of duplicating it.
+function figExistingFigRe(flags) {
+    return new RegExp(
+        '<img[^>]*class=["\\\']?[^"\\\']*' + FIG_IMG_CLASS + '[^>]*>' +
+        '|<span[^>]*class=["\\\']?' + FIG_QSVG_CLASS + '["\\\'\\s][^>]*>\\s*<svg[\\s\\S]*?<\\/svg>\\s*<\\/span>',
+        flags);
+}
 const FIG_PLACEHOLDER_RE = /\[image here:[^\]]*\]/i;
 const FIG_PLACEHOLDER_RE_G = /\[image here:[^\]]*\]/ig;
 
@@ -3161,9 +3506,9 @@ function figPostNeedsFigure(post) {
 function figPostHasFigure(post) {
     const meta = post.meta_input || {};
     const txt = (post.post_content || '') + (meta._aimcq_question_content_hi || '');
-    if (txt.indexOf(FIG_IMG_CLASS) !== -1) return true;
+    if (txt.indexOf(FIG_IMG_CLASS) !== -1 || svgHasInline(txt)) return true;
     const opts = (meta._aimcq_options || []).concat(meta._aimcq_options_hi || []);
-    return opts.some(o => o && o.image);
+    return opts.some(o => o && (o.image || svgHasInline(o.text)));
 }
 
 function figRenderQuestionList() {
@@ -3235,6 +3580,14 @@ function figGetExistingImage(post) {
     return { url, w, h };
 }
 
+// Existing inline-SVG question figure (our wrapper span) → sanitised result or null.
+function figGetExistingSvg(post) {
+    const m = (post.post_content || '').match(figExistingFigRe('i'));
+    if (!m || !svgHasInline(m[0])) return null;
+    const res = svgSanitize(m[0]);
+    return res.ok ? res : null;
+}
+
 function figSelectQuestion(idx) {
     figState.selectedIdx = idx;
     const post = figState.data.posts[idx];
@@ -3246,11 +3599,14 @@ function figSelectQuestion(idx) {
     figReleaseSlotBlobs();
     const slots = {};
     const qImg = figGetExistingImage(post);
+    const qSvg = qImg.url ? null : figGetExistingSvg(post);
+    const qW = (qSvg && qSvg.hasNatural) ? qSvg.w : qImg.w;
+    const qH = (qSvg && qSvg.hasNatural) ? qSvg.h : qImg.h;
     slots.q = {
-        url: qImg.url, blob: null, localUrl: '', uploaded: !!qImg.url,
-        w: qImg.w || FIG_IMG_DEFAULT_W,
-        h: qImg.h || FIG_IMG_DEFAULT_H,
-        ar: (qImg.w && qImg.h) ? (qImg.w / qImg.h) : (FIG_IMG_DEFAULT_W / FIG_IMG_DEFAULT_H),
+        url: qImg.url, svg: qSvg ? qSvg.svg : '', blob: null, localUrl: '', uploaded: !!qImg.url,
+        w: qW || FIG_IMG_DEFAULT_W,
+        h: qH || FIG_IMG_DEFAULT_H,
+        ar: (qW && qH) ? (qW / qH) : (FIG_IMG_DEFAULT_W / FIG_IMG_DEFAULT_H),
         lock: true,
         pos: 'auto',   // where the figure sits in the question text
     };
@@ -3260,11 +3616,21 @@ function figSelectQuestion(idx) {
         const ow = parseInt(opt && opt.image_width, 10) || 0;
         const oh = parseInt(opt && opt.image_height, 10) || 0;
         const ourl = (opt && opt.image) || '';
+        // An option that is ONLY an inline <svg> (what this tool writes for
+        // SVG figures) is loaded back into its slot for re-update.
+        const otext = (opt && opt.text) || '';
+        let osvg = null;
+        if (!ourl && svgHasInline(otext) && stripHtmlTags(otext) === '') {
+            const r = svgSanitize(otext);
+            if (r.ok) osvg = r;
+        }
+        const oW = (osvg && osvg.hasNatural) ? osvg.w : ow;
+        const oH = (osvg && osvg.hasNatural) ? osvg.h : oh;
         slots[k] = {
-            url: ourl, blob: null, localUrl: '', uploaded: !!ourl,
-            w: ow || FIG_IMG_DEFAULT_W,
-            h: oh || FIG_IMG_DEFAULT_H,
-            ar: (ow && oh) ? (ow / oh) : (FIG_IMG_DEFAULT_W / FIG_IMG_DEFAULT_H),
+            url: ourl, svg: osvg ? osvg.svg : '', blob: null, localUrl: '', uploaded: !!ourl,
+            w: oW || FIG_IMG_DEFAULT_W,
+            h: oH || FIG_IMG_DEFAULT_H,
+            ar: (oW && oH) ? (oW / oH) : (FIG_IMG_DEFAULT_W / FIG_IMG_DEFAULT_H),
             lock: true,
         };
     });
@@ -3299,8 +3665,9 @@ function figGetSlotImageSrc(slot) {
 }
 
 // True if a slot has an image (either a pending local crop or an uploaded one).
+// An inline-SVG slot counts as filled too (it needs no upload).
 function figSlotHasImage(slot) {
-    return !!(slot && (slot.localUrl || slot.url));
+    return !!(slot && (slot.localUrl || slot.url || slot.svg));
 }
 
 // True if a slot has a local crop that still needs uploading.
@@ -3422,7 +3789,9 @@ function figRenderSlots() {
         const el = document.createElement('div');
         el.className = 'fig-slot' + (filled ? ' filled' : '');
         // Status badge: pending local crop vs. already on Drive.
-        const statusBadge = pending
+        const statusBadge = slot.svg
+            ? '<span class="fig-slot-status svg" title="Written into the JSON as inline SVG code — no image upload needed"><i data-lucide="code" class="w-3 h-3"></i> Inline SVG \u00b7 no upload</span>'
+            : pending
             ? '<span class="fig-slot-status pending"><i data-lucide="clock" class="w-3 h-3"></i> Not uploaded</span>'
             : (filled && slot.uploaded
                 ? '<span class="fig-slot-status done"><i data-lucide="cloud-check" class="w-3 h-3"></i> On Drive</span>'
@@ -3432,14 +3801,22 @@ function figRenderSlots() {
             : '';
         el.innerHTML = `
             <div class="fig-slot-label">${FIG_SLOT_LABELS[key]}</div>
-            ${filled
+            ${slot.svg
+                ? `<div class="fig-slot-preview fig-slot-svgprev">${svgSized(slot.svg, 0, 0, { style: 'max-width:100%;max-height:86px;' })}</div>`
+                : filled
                 ? `<img src="${escapeAttr(src)}" class="fig-slot-preview" alt="" onerror="this.style.display='none'">`
                 : `<div class="fig-slot-placeholder"><i data-lucide="image" class="w-7 h-7"></i></div>`}
             ${statusBadge}
             ${aiBadge}
-            <button type="button" class="fig-slot-btn fig-slot-btn-crop" data-key="${key}">
-                <i data-lucide="${filled ? 'replace' : 'crop'}" class="w-3 h-3"></i> ${filled ? 'Re-crop' : 'Crop & Set'}
-            </button>
+            <div class="fig-slot-btnrow">
+                <button type="button" class="fig-slot-btn fig-slot-btn-crop" data-key="${key}">
+                    <i data-lucide="${filled && !slot.svg ? 'replace' : 'crop'}" class="w-3 h-3"></i> ${filled && !slot.svg ? 'Re-crop' : 'Crop & Set'}
+                </button>
+                <button type="button" class="fig-slot-btn fig-slot-btn-svg" data-key="${key}"
+                    title="Paste SVG code or import an .svg file — embedded in the JSON as code, no image upload needed (you can also drop an .svg file on this card)">
+                    <i data-lucide="code" class="w-3 h-3"></i> SVG
+                </button>
+            </div>
             <div class="fig-size-row">
                 W <input type="number" class="fig-size-input" data-key="${key}" data-dim="w" value="${slot.w}" min="1">
                 H <input type="number" class="fig-size-input" data-key="${key}" data-dim="h" value="${slot.h}" min="1">
@@ -3456,6 +3833,24 @@ function figRenderSlots() {
     // ---- Wire: crop buttons ----
     grid.querySelectorAll('.fig-slot-btn-crop').forEach(btn => {
         btn.addEventListener('click', () => figCropIntoSlot(btn.getAttribute('data-key')));
+    });
+
+    // ---- Wire: SVG buttons + drop an .svg file straight onto a slot card ----
+    grid.querySelectorAll('.fig-slot-btn-svg').forEach(btn => {
+        btn.addEventListener('click', () => figOpenSvgForSlot(btn.getAttribute('data-key')));
+    });
+    grid.querySelectorAll('.fig-slot').forEach(card => {
+        const key = card.querySelector('.fig-slot-btn-svg').getAttribute('data-key');
+        ['dragenter', 'dragover'].forEach(ev => card.addEventListener(ev, e => {
+            e.preventDefault(); card.classList.add('drag-active');
+        }));
+        ['dragleave', 'drop'].forEach(ev => card.addEventListener(ev, e => {
+            e.preventDefault(); card.classList.remove('drag-active');
+        }));
+        card.addEventListener('drop', e => {
+            const f = e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0];
+            if (f) figSvgFileToSlot(key, f);
+        });
     });
 
     // ---- Wire: per-slot size inputs (aspect-ratio aware) ----
@@ -3495,7 +3890,7 @@ function figRenderSlots() {
             const old = figState.slots[key];
             if (old && old.localUrl) { try { URL.revokeObjectURL(old.localUrl); } catch (e) {} }
             figState.slots[key] = {
-                url: '', blob: null, localUrl: '', uploaded: false,
+                url: '', svg: '', blob: null, localUrl: '', uploaded: false,
                 w: FIG_IMG_DEFAULT_W, h: FIG_IMG_DEFAULT_H,
                 ar: FIG_IMG_DEFAULT_W / FIG_IMG_DEFAULT_H, lock: true,
             };
@@ -3601,6 +3996,12 @@ function figGetCropCanvas() {
 // URL (slot.localUrl). It is uploaded only when the user clicks
 // "Apply Figures to This Question".
 function figCropIntoSlot(key) {
+    if (!figHasSource()) {
+        showToast('No PDF / image loaded',
+            'Cropping needs a PDF or image — click "Add PDF / image to crop" above. ' +
+            'For SVG figures use the SVG button instead (no upload needed).', 'error');
+        return;
+    }
     const canvas = figGetCropCanvas();
     if (!canvas) return;
 
@@ -3614,6 +4015,7 @@ function figCropIntoSlot(key) {
         slot.blob = blob;
         slot.localUrl = URL.createObjectURL(blob);
         slot.url = '';
+        slot.svg = '';
         slot.uploaded = false;
         slot.aiGenerated = !!aiGenerated;
         slot.ar = natW > 0 && natH > 0 ? (natW / natH) : (FIG_IMG_DEFAULT_W / FIG_IMG_DEFAULT_H);
@@ -3708,6 +4110,7 @@ function figSlotSetBusy(key, busy, label) {
                 figState.scale = 1.0;
                 figState.cropMode = false;
                 document.getElementById('fig-total-pages').textContent = doc.numPages;
+                figLeaveSvgOnly();
                 document.getElementById('fig-source-pick').classList.add('hidden');
                 document.getElementById('fig-workspace').classList.remove('hidden');
                 document.getElementById('fig-img-file').value = '';
@@ -3728,10 +4131,18 @@ function figSlotSetBusy(key, busy, label) {
     input.addEventListener('change', e => {
         const file = e.target.files[0];
         if (!file) return;
+        // SVG needs no cropping and no image hosting — its code goes straight
+        // into the JSON, so skip the crop workspace entirely.
+        if (/\.svg$/i.test(file.name) || file.type === 'image/svg+xml') {
+            e.target.value = '';
+            figReadSvgFileForWorkspace(file);
+            return;
+        }
         if (!/^image\//.test(file.type)) {
             showToast('Wrong file', 'Please upload an image file.', 'error');
             return;
         }
+        figLeaveSvgOnly();
         figState.scale = 1.0;
         figState.cropMode = false;
         document.getElementById('fig-source-pick').classList.add('hidden');
@@ -4051,6 +4462,7 @@ function figQueuePdfPage(num) {
         figState.imgBitmap = null;
         figState.srcType = null;
         figState.cropMode = false;
+        figLeaveSvgOnly();
         document.getElementById('fig-workspace').classList.add('hidden');
         document.getElementById('fig-source-pick').classList.remove('hidden');
         document.getElementById('fig-pdf-file').value = '';
@@ -4370,9 +4782,10 @@ function figRenderPreview() {
     // crop preview if present, else the existing Drive URL.
     const qSlot = figState.slots.q;
     const qSrc = figGetSlotImageSrc(qSlot);
-    qText = figApplyImageToText(qText, qSrc
-        ? figBuildImgTag(qSrc, qSlot.w, qSlot.h) : '', !!qSrc,
-        qSlot ? qSlot.pos : undefined);
+    let qTag = '';
+    if (qSlot && qSlot.svg) qTag = figBuildSvgFigure(qSlot);
+    else if (qSrc) qTag = figBuildImgTag(qSrc, qSlot.w, qSlot.h);
+    qText = figApplyImageToText(qText, qTag, !!qTag, qSlot ? qSlot.pos : undefined);
 
     const correct = Array.isArray(meta._aimcq_correct_answers)
         ? meta._aimcq_correct_answers.map(Number) : [0];
@@ -4397,10 +4810,15 @@ function figRenderPreview() {
         // the text is fully replaced by the figure (matches apply behaviour).
         let optText = (opt && opt.text) || '';
         optText = optText.replace(FIG_PLACEHOLDER_RE_G, '').trim();
-        if (imgUrl) optText = '';
+        const slotSvg = slot && slot.svg;
+        if (imgUrl || slotSvg) optText = '';
 
         let imgHtml = '';
-        if (imgUrl) {
+        if (slotSvg) {
+            // Inline SVG option — same AR-fitted size that Apply will write.
+            const fit = figFitToBox(slot.w, slot.h, slot.ar > 0 ? slot.ar : (slot.w / slot.h));
+            imgHtml = `<span class="fig-preview-opt-svg">${svgSized(slotSvg, fit.w, fit.h)}</span>`;
+        } else if (imgUrl) {
             // Compute AR-correct display size — identical to what Apply
             // will store — so the preview matches the published result
             // and the figure is never stretched.
@@ -4454,11 +4872,13 @@ function figApplyImageToText(text, imgTag, hasImg, pos) {
         return out.replace(FIG_PLACEHOLDER_RE_G, '').trim();
     }
     if (pos === undefined || pos === null || pos === 'auto') {
-        const imgRe = new RegExp('<img[^>]*class=["\\\']?[^"\\\']*' + FIG_IMG_CLASS + '[^>]*>', 'i');
+        // (function replacers: SVG code may contain "$" sequences that a
+        // plain replacement string would interpret specially)
+        const imgRe = figExistingFigRe('i');
         if (FIG_PLACEHOLDER_RE.test(out)) {
-            out = out.replace(FIG_PLACEHOLDER_RE, imgTag);
+            out = out.replace(FIG_PLACEHOLDER_RE, () => imgTag);
         } else if (imgRe.test(out)) {
-            out = out.replace(imgRe, imgTag);
+            out = out.replace(imgRe, () => imgTag);
         } else {
             out = out + (out.trim().endsWith('>') ? '' : '<br>') + imgTag;
         }
@@ -4485,7 +4905,7 @@ function figApplyImageToText(text, imgTag, hasImg, pos) {
 // Remove [image here: ...] placeholders and any existing aimcq figure
 // <img> from a question text — the neutral base for positional insertion.
 function figCleanQText(text) {
-    const imgReG = new RegExp('<img[^>]*class=["\\\']?[^"\\\']*' + FIG_IMG_CLASS + '[^>]*>', 'ig');
+    const imgReG = figExistingFigRe('ig');
     return String(text || '')
         .replace(imgReG, '')
         .replace(FIG_PLACEHOLDER_RE_G, '')
@@ -4594,15 +5014,19 @@ async function figApplyToQuestion() {
 
     // ---- 1. Question figure ----
     const qSlot = figState.slots.q;
-    if (qSlot && qSlot.url) {
-        const imgTag = figBuildImgTag(qSlot.url, qSlot.w, qSlot.h);
+    if (qSlot && (qSlot.url || qSlot.svg)) {
+        // SVG → the drawing's code is written INTO the question text (no
+        // image, no URL); raster → <img> pointing at the hosted URL.
+        const imgTag = qSlot.svg ? figBuildSvgFigure(qSlot) : figBuildImgTag(qSlot.url, qSlot.w, qSlot.h);
         post.post_content = figApplyImageToText(post.post_content || '', imgTag, true, qSlot.pos);
         post.post_title = stripHtmlTags(post.post_content).slice(0, 120) || post.post_title;
 
-        // Hindi content mirror (same line position, clamped to its own lines)
+        // Hindi content mirror (same line position, clamped to its own lines).
+        // The SVG copy gets its own fresh ids so the two never clash.
         if (meta._aimcq_question_content_hi) {
+            const hiTag = qSlot.svg ? figBuildSvgFigure(qSlot) : imgTag;
             meta._aimcq_question_content_hi =
-                figApplyImageToText(meta._aimcq_question_content_hi, imgTag, true, qSlot.pos);
+                figApplyImageToText(meta._aimcq_question_content_hi, hiTag, true, qSlot.pos);
         }
         // Record dimensions in the meta the theme reads.
         meta._aimcq_image_width = String(qSlot.w || FIG_IMG_DEFAULT_W);
@@ -4617,7 +5041,7 @@ async function figApplyToQuestion() {
     // theme never stretches the figure.
     ['a','b','c','d'].forEach(key => {
         const slot = figState.slots[key];
-        if (!slot || !slot.url) return;
+        if (!slot || !(slot.url || slot.svg)) return;
         const oi = FIG_OPT_INDEX[key];
 
         // Compute display dimensions that strictly preserve the figure's
@@ -4628,6 +5052,15 @@ async function figApplyToQuestion() {
         function applyToOptionArray(arr) {
             if (!Array.isArray(arr)) return;
             if (!arr[oi]) arr[oi] = { text: '', image: '' };
+            if (slot.svg) {
+                // SVG option: the drawing's code IS the option text; there is
+                // no image URL (and no stale image size) to keep.
+                arr[oi].text = svgSized(slot.svg, dims.w, dims.h);
+                arr[oi].image = '';
+                delete arr[oi].image_width;
+                delete arr[oi].image_height;
+                return;
+            }
             arr[oi].image = slot.url;
             arr[oi].image_width = String(dims.w);
             arr[oi].image_height = String(dims.h);
@@ -4657,8 +5090,12 @@ async function figApplyToQuestion() {
     figRenderSlots();
     figRenderQuestionList();
     figRenderPreview();
+    const nSvg = slotKeys.filter(k => figState.slots[k] && figState.slots[k].svg).length;
+    const what = [];
+    if (pendingKeys.length) what.push(`${pendingKeys.length} image${pendingKeys.length > 1 ? 's' : ''} uploaded`);
+    if (nSvg) what.push(`${nSvg} SVG figure${nSvg > 1 ? 's' : ''} embedded as inline code`);
     showToast('Applied',
-        `Figures uploaded & applied to Q #${figState.selectedIdx + 1}. ` +
+        `${what.join(' + ') || 'Figures'} \u2014 applied to Q #${figState.selectedIdx + 1}. ` +
         `Don't forget to save the JSON.`,
         'success');
 }
@@ -6714,7 +7151,6 @@ function qbRenderSource() {
         card.dataset.si = si;
         card.dataset.pi = pi;
         card.innerHTML = `
-            <span class="qb-card-num src" title="Question ${pi + 1} in its source file">${pi + 1}</span>
             <span class="qb-card-dot" style="background:${color}"></span>
             <span class="qb-card-text">${escapeHtml(qbQuestionText(post))}</span>
             <button class="qb-card-add" title="Add to new quiz" ${inQuiz ? 'disabled' : ''}>
@@ -6802,8 +7238,6 @@ function qbBuildJson() {
     };
     const title = (document.getElementById('qb-quiz-title').value || '').trim();
     if (title) out.quiz_title = title;
-    // Overwrite the imported source terms with this quiz's own file name/title term.
-    aimcqApplyQuizTerm(out, document.getElementById('qb-filename').value, title);
     return out;
 }
 
@@ -6964,7 +7398,7 @@ function qbBuildJson() {
             }
         }
         if (window.console && console.info) {
-            console.info('[mcqs-tool] core v2.9.3 (extractor: optional Hindi-language explanation for non-Hindi questions) loaded OK — GitHub picker ready.');
+            console.info('[mcqs-tool] core v2.9.6 (figure updater: inline SVG figures for question & options, image upload optional) loaded OK — GitHub picker ready.');
         }
     } catch (e) {
         if (window.console && console.error) {
@@ -7806,6 +8240,308 @@ function figRenderQPosPicker() {
         });
     });
 }
+
+// ============================================================
+// ============ SVG FIGURES (Figure Updater + editors) ========
+// ============================================================
+// SVG is stored as inline code inside the quiz JSON:
+//   question → post_content (+ Hindi mirror): <span class="aimcq-question-svg"><svg …></svg></span>
+//   option   → _aimcq_options[i].text       : <svg …></svg>   (image stays '')
+// so no image file is ever uploaded for an SVG figure.
+
+// Question-figure HTML for a slot that holds SVG.
+function figBuildSvgFigure(slot) {
+    const w = parseInt(slot.w, 10) || FIG_IMG_DEFAULT_W;
+    const h = parseInt(slot.h, 10) || FIG_IMG_DEFAULT_H;
+    return '<span class="' + FIG_QSVG_CLASS + '" style="display:block;margin:10px 0;">' +
+        svgSized(slot.svg, w, h) + '</span>';
+}
+
+// Put a sanitised SVG into a slot (replaces any crop / hosted image there).
+function figSetSlotSvg(key, res) {
+    const slot = figState.slots[key];
+    if (!slot) return;
+    if (slot.localUrl) { try { URL.revokeObjectURL(slot.localUrl); } catch (e) {} }
+    slot.blob = null; slot.localUrl = ''; slot.url = '';
+    slot.uploaded = false; slot.aiGenerated = false;
+    slot.svg = res.svg;
+    let w = res.hasNatural ? res.w : FIG_IMG_DEFAULT_W;
+    let h = res.hasNatural ? res.h : FIG_IMG_DEFAULT_H;
+    if (w > 480) { h = Math.max(1, Math.round(h * 480 / w)); w = 480; }   // sensible starting size
+    slot.w = w; slot.h = h; slot.ar = w / h; slot.lock = true;
+}
+
+function figSvgApplyToSlot(key, res) {
+    figSetSlotSvg(key, res);
+    figState.pendingSvg = null;
+    figUpdateSvgOnlyBar();
+    figRenderSlots();
+    figRenderPreview();
+    showToast('SVG set',
+        FIG_SLOT_LABELS[key] + ' uses inline SVG' + (res.hasNatural ? ' (' + res.w + '×' + res.h + ')' : '') +
+        ' — no image upload needed. Apply to write the code into the JSON.', 'success');
+}
+
+// Open the SVG dialog for a slot (code editor + .svg import + live preview).
+function figOpenSvgForSlot(key) {
+    if (figState.selectedIdx === null) {
+        showToast('No question', 'Select a question first.', 'error');
+        return;
+    }
+    const slot = figState.slots[key];
+    const pending = figState.pendingSvg;
+    figOpenSvgModal({
+        title: 'SVG figure',
+        targets: FIG_SLOT_KEYS.map(k => ({ key: k, label: FIG_SLOT_LABELS[k] })),
+        target: key,
+        initialCode: (slot && slot.svg) || (pending && pending.code) || '',
+        onApply: (res, target) => figSvgApplyToSlot(target, res),
+    });
+}
+
+// A dropped / picked .svg file for a slot: apply straight away when valid,
+// otherwise open the dialog so the problem is visible.
+function figSvgFileToSlot(key, file) {
+    if (!file) return;
+    if (!(/\.svg$/i.test(file.name) || file.type === 'image/svg+xml')) {
+        showToast('Not an SVG', 'Drop an .svg file here (or use Crop & Set for other images).', 'error');
+        return;
+    }
+    if (figState.selectedIdx === null) { showToast('No question', 'Select a question first.', 'error'); return; }
+    const reader = new FileReader();
+    reader.onload = () => {
+        const code = String(reader.result || '');
+        const res = svgSanitize(code);
+        if (res.ok) figSvgApplyToSlot(key, res);
+        else figOpenSvgModal({
+            title: 'SVG figure',
+            targets: FIG_SLOT_KEYS.map(k => ({ key: k, label: FIG_SLOT_LABELS[k] })),
+            target: key, initialCode: code,
+            onApply: (r, target) => figSvgApplyToSlot(target, r),
+        });
+    };
+    reader.readAsText(file);
+}
+
+// ---------- SVG-only mode: use the Figure Updater with no PDF / image ----------
+function figEnterSvgOnly(pending) {
+    try { figDisableCropper(); } catch (e) {}
+    figState.pdfDoc = null; figState.imgBitmap = null; figState.srcType = null; figState.cropMode = false;
+    if (pending) figState.pendingSvg = pending;
+    document.getElementById('fig-source-pick').classList.add('hidden');
+    const ws = document.getElementById('fig-workspace');
+    ws.classList.remove('hidden');
+    ws.classList.add('fig-svg-only');
+    figUpdateSvgOnlyBar();
+    lucide.createIcons();
+}
+
+function figLeaveSvgOnly() {
+    const ws = document.getElementById('fig-workspace');
+    if (ws) ws.classList.remove('fig-svg-only');
+}
+
+function figUpdateSvgOnlyBar() {
+    const note = document.getElementById('fig-svgonly-note');
+    if (!note) return;
+    const p = figState.pendingSvg;
+    note.innerHTML = p
+        ? '<b>' + escapeHtml(p.name || 'SVG') + '</b> is loaded — pick a question, then press <b>SVG</b> on its Question / Option slot.'
+        : 'No PDF or image needed for SVG figures — pick a question, then press <b>SVG</b> on a slot to paste code or import an .svg file.';
+}
+
+(function wireFigSvgOnly() {
+    const tile = document.getElementById('fig-svg-upload');
+    const file = document.getElementById('fig-svg-only-file');
+    if (tile) tile.addEventListener('click', e => {
+        if (e.target === file) return;
+        figEnterSvgOnly(null);
+    });
+    if (file) file.addEventListener('change', e => {
+        const f = e.target.files[0];
+        e.target.value = '';
+        if (!f) return;
+        figReadSvgFileForWorkspace(f);
+    });
+    const back = document.getElementById('fig-svgonly-addsrc');
+    if (back) back.addEventListener('click', () => {
+        figLeaveSvgOnly();
+        document.getElementById('fig-workspace').classList.add('hidden');
+        document.getElementById('fig-source-pick').classList.remove('hidden');
+    });
+})();
+
+// An .svg picked in the source step (either tile): no cropping, no upload —
+// keep its code ready for a slot.
+function figReadSvgFileForWorkspace(f) {
+    const reader = new FileReader();
+    reader.onload = () => {
+        const code = String(reader.result || '');
+        const res = svgSanitize(code);
+        if (!res.ok) { showToast('SVG problem', res.error, 'error'); return; }
+        figEnterSvgOnly({ name: f.name, code: code });
+        showToast('SVG ready',
+            f.name + ' needs no image upload — select a question and press SVG on a slot.', 'success');
+    };
+    reader.readAsText(f);
+}
+
+// ---------- the SVG dialog ----------
+var figSvgModalState = { onApply: null, res: null, timer: null, widthTouched: false };
+
+function figOpenSvgModal(opts) {
+    const m = document.getElementById('fig-svg-modal');
+    if (!m) return;
+    figSvgModalState.onApply = opts.onApply || null;
+    figSvgModalState.res = null;
+    figSvgModalState.widthTouched = false;
+
+    document.getElementById('fig-svg-title').textContent = opts.title || 'SVG figure';
+    const tRow = document.getElementById('fig-svg-target-row');
+    const tSel = document.getElementById('fig-svg-target');
+    if (opts.targets && opts.targets.length) {
+        tSel.innerHTML = opts.targets.map(t =>
+            '<option value="' + escapeAttr(t.key) + '">' + escapeHtml(t.label) + '</option>').join('');
+        tSel.value = opts.target || opts.targets[0].key;
+        tRow.classList.remove('hidden');
+    } else {
+        tSel.innerHTML = '';
+        tRow.classList.add('hidden');
+    }
+    document.getElementById('fig-svg-width-row').classList.toggle('hidden', !opts.showWidth);
+    document.getElementById('fig-svg-code').value = opts.initialCode || '';
+    m.classList.remove('hidden');
+    figSvgRefresh();
+    try { lucide.createIcons(); } catch (e) {}
+    setTimeout(() => { try { document.getElementById('fig-svg-code').focus(); } catch (e) {} }, 30);
+}
+
+function figCloseSvgModal() {
+    const m = document.getElementById('fig-svg-modal');
+    if (m) m.classList.add('hidden');
+}
+
+function figSvgRefresh() {
+    const code = document.getElementById('fig-svg-code').value;
+    const prev = document.getElementById('fig-svg-prev');
+    const info = document.getElementById('fig-svg-info');
+    const btn = document.getElementById('fig-svg-apply');
+    const wIn = document.getElementById('fig-svg-width');
+    if (!code.trim()) {
+        figSvgModalState.res = null;
+        prev.innerHTML = '<span class="fig-svg-empty">Preview appears here</span>';
+        info.innerHTML = '';
+        btn.disabled = true;
+        return;
+    }
+    const res = svgSanitize(code);
+    figSvgModalState.res = res;
+    if (!res.ok) {
+        prev.innerHTML = '<span class="fig-svg-empty">Nothing to preview</span>';
+        info.innerHTML = '<div class="fig-svg-err">' + escapeHtml(res.error) + '</div>';
+        btn.disabled = true;
+        return;
+    }
+    prev.innerHTML = svgSized(res.svg, 0, 0, { style: 'max-width:100%;max-height:260px;' });
+    const kb = res.bytes < 1024 ? res.bytes + ' B' : (res.bytes / 1024).toFixed(1) + ' KB';
+    let html = '<div class="fig-svg-ok">✓ Valid SVG · ' +
+        (res.hasNatural ? res.w + '×' + res.h + ' px · ' : 'no intrinsic size · ') + kb + '</div>' +
+        '<div class="fig-svg-note">Saved into the JSON as inline code — <b>no image upload</b>.</div>';
+    if (res.removed.length) {
+        html += '<div class="fig-svg-warn">Removed for safety: ' + res.removed.map(escapeHtml).join(', ') + '</div>';
+    }
+    if (res.bytes > SVG_WARN_BYTES) {
+        html += '<div class="fig-svg-warn">Large SVG — it will make the quiz JSON heavy. Consider optimising it (e.g. SVGO).</div>';
+    }
+    info.innerHTML = html;
+    if (!figSvgModalState.widthTouched) wIn.value = Math.min(res.hasNatural ? res.w : 200, 320);
+    btn.disabled = false;
+}
+
+(function wireFigSvgModal() {
+    const m = document.getElementById('fig-svg-modal');
+    if (!m) return;
+    const ta = document.getElementById('fig-svg-code');
+    ta.addEventListener('input', () => {
+        clearTimeout(figSvgModalState.timer);
+        figSvgModalState.timer = setTimeout(figSvgRefresh, 150);
+    });
+    document.getElementById('fig-svg-width').addEventListener('input', () => { figSvgModalState.widthTouched = true; });
+
+    function loadFile(f) {
+        if (!f) return;
+        if (!(/\.svg$/i.test(f.name) || f.type === 'image/svg+xml' || f.type === 'text/plain')) {
+            showToast('Not an SVG', 'Choose an .svg file or paste the SVG code.', 'error');
+            return;
+        }
+        const r = new FileReader();
+        r.onload = () => { ta.value = String(r.result || ''); figSvgRefresh(); };
+        r.readAsText(f);
+    }
+    document.getElementById('fig-svg-file').addEventListener('change', e => { loadFile(e.target.files[0]); e.target.value = ''; });
+    ['dragenter', 'dragover', 'dragleave', 'drop'].forEach(ev =>
+        ta.addEventListener(ev, e => { e.preventDefault(); e.stopPropagation(); }));
+    ta.addEventListener('drop', e => loadFile(e.dataTransfer.files[0]));
+    document.getElementById('fig-svg-clear').addEventListener('click', () => { ta.value = ''; figSvgRefresh(); ta.focus(); });
+    document.getElementById('fig-svg-paste').addEventListener('click', () => {
+        if (!navigator.clipboard || !navigator.clipboard.readText) {
+            showToast('Clipboard blocked', 'Paste into the box with Ctrl/Cmd+V instead.', 'error'); return;
+        }
+        navigator.clipboard.readText().then(t => { ta.value = t; figSvgRefresh(); })
+            .catch(() => showToast('Clipboard blocked', 'Paste into the box with Ctrl/Cmd+V instead.', 'error'));
+    });
+
+    ['fig-svg-close', 'fig-svg-cancel'].forEach(id =>
+        document.getElementById(id).addEventListener('click', figCloseSvgModal));
+    m.querySelector('.gd-modal-backdrop').addEventListener('click', figCloseSvgModal);
+    document.getElementById('fig-svg-apply').addEventListener('click', () => {
+        const res = figSvgModalState.res;
+        if (!res || !res.ok) return;
+        const target = document.getElementById('fig-svg-target').value;
+        const width = document.getElementById('fig-svg-width').value;
+        const cb = figSvgModalState.onApply;
+        figCloseSvgModal();
+        if (cb) cb(res, target, width);
+    });
+    // Esc closes just this dialog (not the question editor underneath it).
+    document.addEventListener('keydown', e => {
+        if (e.key === 'Escape' && !m.classList.contains('hidden')) {
+            e.stopImmediatePropagation();
+            figCloseSvgModal();
+        }
+    }, true);
+})();
+
+// Insert an SVG at the caret of a rich-text editor / option editor.
+//   wrapAsFigure → wrap in the question-figure span (rich editors only)
+function svgInsertIntoEditable(compose, wrapAsFigure) {
+    const saved = saveSelection();
+    const inside = (saved && compose.contains(saved.commonAncestorContainer)) ? saved : null;
+    figOpenSvgModal({
+        title: 'Insert SVG',
+        targets: null,
+        showWidth: true,
+        onApply: (res, _t, width) => {
+            const w = Math.max(1, parseInt(width, 10) || res.w || 200);
+            const h = res.hasNatural ? Math.max(1, Math.round(w * res.h / res.w)) : 0;
+            let html = svgSized(res.svg, w, h);
+            if (wrapAsFigure) {
+                html = '<span class="' + FIG_QSVG_CLASS + '" style="display:block;margin:10px 0;">' + html + '</span>';
+            }
+            compose.focus();
+            if (inside) restoreSelection(inside);
+            else {
+                const r = document.createRange();
+                r.selectNodeContents(compose); r.collapse(false);
+                restoreSelection(r);
+            }
+            document.execCommand('insertHTML', false, html);
+            compose.dispatchEvent(new Event('input', { bubbles: true }));
+            showToast('SVG inserted', 'Saved as inline code in the ' + (wrapAsFigure ? 'text' : 'option') + ' — no image upload.', 'success');
+        },
+    });
+}
+
 
 // Re-render the picker whenever the slots re-render (question selected,
 // figure cropped/cleared/applied) — wrap the existing renderer.
@@ -9297,32 +10033,6 @@ function qxLangTermInfo(recs) {
     if (kinds.has('bi') || (kinds.has('en') && kinds.has('hi'))) return { language: 'English & Hindi', code: '01ENHI' };
     if (kinds.has('hi')) return { language: 'Hindi', code: '01HI' };
     return { language: 'English', code: '01EN' };
-}
-
-// Replace a quiz's imported terms with ONE term built from the export's file
-// name + quiz title, and point every question at it. Used by the Quiz Builder
-// and Combine JSON so the output isn't tied to the source files' terms.
-//   term.name = quiz title (falls back to the file name)
-//   term.slug = slug of the file name (falls back to the title)
-// Language label/code is detected from the questions themselves.
-function aimcqApplyQuizTerm(data, fileName, title) {
-    var base = String(fileName || '').trim().replace(/\.json$/i, '');
-    var name = String(title || '').trim() || base;
-    if (!name) return data;                       // nothing to overwrite with
-    var slug = qxSlugify(base || name);
-    var lang = aimcqResolveLanguages({ posts: data.posts || [] });
-    var term = { taxonomy: 'topic' };
-    if (lang && lang.valid) { term.language = lang.label; term.language_code = lang.normalizedCode; }
-    term.name = name;
-    term.slug = slug;
-    data.terms = [term];
-    data.posts = (data.posts || []).map(function (p) {
-        if (!p || typeof p !== 'object' || p.post_type === 'passage') return p;
-        var np = Object.assign({}, p);
-        np.taxonomies = { topic: [slug] };
-        return np;
-    });
-    return data;
 }
 
 function qxSlugify(name) {
