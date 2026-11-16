@@ -125,16 +125,6 @@
                 <p class="text-sm font-semibold text-gray-700 mb-2">Selected Files:</p>
                 <div id="combine-file-list" class="flex flex-wrap gap-2 max-h-32 overflow-y-auto custom-scrollbar"></div>
             </div>
-            <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                <div>
-                    <label class="fb-label">Output file name <span class="text-gray-400">(optional)</span></label>
-                    <input type="text" id="combine-out-filename" class="fb-input" placeholder="combined-quiz.json">
-                </div>
-                <div>
-                    <label class="fb-label">Quiz title <span class="text-gray-400">(optional — replaces imported terms)</span></label>
-                    <input type="text" id="combine-out-title" class="fb-input" placeholder="My Combined Quiz">
-                </div>
-            </div>
             <button id="btn-combine" class="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-semibold py-3 px-4 rounded-xl shadow-sm transition-all flex items-center justify-center gap-2">
                 <i data-lucide="combine" class="w-5 h-5"></i> Combine JSONs
             </button>
@@ -537,7 +527,7 @@
                     </span>
                     <span class="flex-1 min-w-0">
                         <span class="block text-sm font-bold text-gray-800">Image Hosting <span class="text-amber-600 font-semibold">(GitHub + jsDelivr)</span></span>
-                        <span class="block text-xs text-gray-400">Cropped figures are committed to a GitHub repo and served via the jsDelivr CDN.</span>
+                        <span class="block text-xs text-gray-400">Needed only for cropped images — SVG figures are embedded as code and never uploaded.</span>
                     </span>
                     <span id="fig-host-status-chip" class="ai-status-chip off flex-shrink-0">Not configured</span>
                     <i data-lucide="chevron-down" id="fig-host-chevron" class="w-4 h-4 text-gray-400 flex-shrink-0 transition-transform"></i>
@@ -592,9 +582,9 @@
             <div id="fig-step-pdf" class="hidden space-y-3">
                 <div class="flex items-center gap-3">
                     <span class="w-7 h-7 rounded-full bg-emerald-600 text-white flex items-center justify-center text-sm font-bold flex-shrink-0">2</span>
-                    <h3 class="font-semibold text-gray-800">Upload Exam PDF or Image <span class="text-gray-400 font-normal text-sm">(to crop figures from)</span></h3>
+                    <h3 class="font-semibold text-gray-800">Upload Exam PDF or Image <span class="text-gray-400 font-normal text-sm">(to crop figures from)</span> <span class="text-emerald-600 font-semibold text-sm">&mdash; or skip it and use SVG</span></h3>
                 </div>
-                <div id="fig-source-pick" class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div id="fig-source-pick" class="grid grid-cols-1 sm:grid-cols-3 gap-3">
                     <div id="fig-pdf-upload" class="fig-upload-area" onclick="document.getElementById('fig-pdf-file').click()">
                         <input type="file" id="fig-pdf-file" accept="application/pdf" class="hidden">
                         <i data-lucide="file-up" class="w-9 h-9 mx-auto text-gray-400 mb-2"></i>
@@ -602,10 +592,17 @@
                         <p class="text-xs text-gray-400 mt-1">Rendered at high fidelity for accurate cropping</p>
                     </div>
                     <div id="fig-img-upload" class="fig-upload-area" onclick="document.getElementById('fig-img-file').click()">
-                        <input type="file" id="fig-img-file" accept="image/*" class="hidden">
+                        <input type="file" id="fig-img-file" accept="image/*,.svg" class="hidden">
                         <i data-lucide="image-plus" class="w-9 h-9 mx-auto text-gray-400 mb-2"></i>
                         <p class="text-sm text-gray-700 font-semibold">Upload an image</p>
-                        <p class="text-xs text-gray-400 mt-1">PNG, JPG, WEBP, GIF — crop any region</p>
+                        <p class="text-xs text-gray-400 mt-1">PNG, JPG, WEBP, GIF — crop any region (an .svg skips cropping &amp; upload)</p>
+                    </div>
+                    <div id="fig-svg-upload" class="fig-upload-area fig-upload-svg" title="No PDF, no image, no upload — SVG code goes straight into the quiz JSON">
+                        <input type="file" id="fig-svg-only-file" accept=".svg,image/svg+xml" class="hidden">
+                        <i data-lucide="code" class="w-9 h-9 mx-auto text-emerald-500 mb-2"></i>
+                        <p class="text-sm text-gray-700 font-semibold">Use SVG only</p>
+                        <p class="text-xs text-gray-400 mt-1">Paste SVG code or import an .svg &mdash; embedded in the JSON, <b>no image upload</b></p>
+                        <button type="button" class="fig-svg-pickfile" onclick="event.stopPropagation();document.getElementById('fig-svg-only-file').click()">Import .svg file&hellip;</button>
                     </div>
                 </div>
             </div>
@@ -613,8 +610,15 @@
             <!-- Step 3: Workspace -->
             <div id="fig-workspace" class="hidden space-y-5">
 
+                <!-- SVG-only mode banner (no PDF / image loaded) -->
+                <div class="fig-svgonly-bar">
+                    <i data-lucide="code" class="w-4 h-4 text-emerald-600 flex-shrink-0"></i>
+                    <span class="flex-1 min-w-0 text-xs text-emerald-800" id="fig-svgonly-note"></span>
+                    <button type="button" class="fig-nav-btn" id="fig-svgonly-addsrc" title="Load a PDF or image so you can crop raster figures too">Add PDF / image to crop</button>
+                </div>
+
                 <!-- PDF viewer + cropper -->
-                <div class="fig-pdf-stage">
+                <div class="fig-pdf-stage" id="fig-pdf-stage-wrap">
                     <div class="fig-page-nav">
                         <button type="button" class="fig-nav-btn" id="fig-prev-page">&laquo; Prev</button>
                         <span>Page <b id="fig-cur-page">1</b> / <b id="fig-total-pages">--</b></span>
@@ -647,7 +651,7 @@
                 </div>
 
                 <!-- Quick crop & upload -->
-                <div class="bg-sky-50 border border-sky-100 rounded-xl p-4">
+                <div class="bg-sky-50 border border-sky-100 rounded-xl p-4" id="fig-quick-card">
                     <div class="flex items-center justify-between gap-3 flex-wrap">
                         <div>
                             <h4 class="font-semibold text-sky-900 text-sm mb-0.5">Quick Crop &amp; Upload</h4>
@@ -738,7 +742,8 @@
                             <i data-lucide="upload-cloud" class="w-4 h-4"></i> Apply Figures to This Question
                         </button>
                         <p class="text-xs text-gray-400 mt-1.5 text-center">
-                            Uploads any newly-cropped figures to GitHub + jsDelivr, then writes them into the question.
+                            Uploads any newly-cropped images to GitHub + jsDelivr, then writes them into the question.
+                            <b>SVG figures skip the upload</b> — their code is written straight into the JSON.
                         </p>
                     </div>
                 </div>
@@ -1417,6 +1422,51 @@
 </div>
 
 <!-- ===== GitHub File Picker Modal (tabbed) ===== -->
+<!-- ===== SVG dialog: paste code / import .svg (Figure Updater + editors) ===== -->
+<div id="fig-svg-modal" class="gd-modal hidden">
+    <div class="gd-modal-backdrop"></div>
+    <div class="gd-modal-panel" style="max-width:900px">
+        <div class="flex items-center justify-between px-5 py-3.5 border-b border-gray-100">
+            <h3 class="font-bold text-gray-800 flex items-center gap-2">
+                <i data-lucide="code" class="w-4 h-4 text-emerald-600"></i><span id="fig-svg-title">SVG figure</span>
+            </h3>
+            <button type="button" id="fig-svg-close" class="text-gray-400 hover:text-gray-700" title="Close"><i data-lucide="x" class="w-5 h-5"></i></button>
+        </div>
+        <div class="fig-svg-body">
+            <div class="fig-svg-col">
+                <div id="fig-svg-target-row" class="fig-svg-row hidden">
+                    <label class="fig-cfg-label" style="color:#475569">Place into</label>
+                    <select id="fig-svg-target" class="gd-input"></select>
+                </div>
+                <div class="fig-svg-row" style="flex-wrap:wrap">
+                    <label class="gd-btn gd-btn-outline cursor-pointer" style="margin:0">
+                        <input type="file" id="fig-svg-file" accept=".svg,image/svg+xml,text/plain" class="hidden">
+                        <i data-lucide="file-up" class="w-3.5 h-3.5"></i> Import .svg file
+                    </label>
+                    <button type="button" class="gd-btn gd-btn-outline" id="fig-svg-paste"><i data-lucide="clipboard-paste" class="w-3.5 h-3.5"></i> Paste</button>
+                    <button type="button" class="gd-btn gd-btn-outline" id="fig-svg-clear"><i data-lucide="eraser" class="w-3.5 h-3.5"></i> Clear</button>
+                </div>
+                <textarea id="fig-svg-code" class="fig-svg-code" spellcheck="false"
+                    placeholder="Paste SVG code here (&lt;svg …&gt; … &lt;/svg&gt;) or drop an .svg file on this box"></textarea>
+            </div>
+            <div class="fig-svg-col">
+                <div class="fig-cfg-label" style="color:#475569">Live preview</div>
+                <div id="fig-svg-prev" class="fig-svg-prev"></div>
+                <div id="fig-svg-info"></div>
+                <div id="fig-svg-width-row" class="fig-svg-row hidden">
+                    <label class="fig-cfg-label" style="color:#475569;margin:0">Width (px)</label>
+                    <input type="number" id="fig-svg-width" class="gd-input" style="width:96px" min="1" value="200">
+                    <span class="text-[11px] text-gray-400">height follows the SVG's aspect ratio</span>
+                </div>
+            </div>
+        </div>
+        <div class="flex items-center justify-end gap-2 px-5 py-3 border-t border-gray-100 bg-gray-50">
+            <button type="button" class="gd-btn gd-btn-outline" id="fig-svg-cancel">Cancel</button>
+            <button type="button" class="gd-btn gd-btn-primary" id="fig-svg-apply" disabled><i data-lucide="check" class="w-3.5 h-3.5"></i> Use this SVG</button>
+        </div>
+    </div>
+</div>
+
 <div id="fig-gh-picker-modal" class="gd-modal hidden">
     <div class="gd-modal-backdrop" onclick="figGitHubClosePicker()"></div>
     <div class="gd-modal-panel">
