@@ -703,3 +703,38 @@ the remaining modal height, shrinks correctly, scrolls as one unit) while
 the header, tab bar, and footer stay fixed and always visible. Every row —
 including the last file or folder in a long listing — is now always
 reachable by scrolling.
+
+---
+
+## v2.9.6 — Figure Updater: SVG support (question & options), image upload optional
+
+**Inline SVG instead of images.** Every figure slot (Question Figure, Option A–D)
+now has an **SVG** button next to *Crop & Set*:
+
+- paste SVG code, **or** import an `.svg` file, **or** drop an `.svg` onto a slot card;
+- live, sanitised preview; choose/change the target slot in the dialog;
+- on **Apply**, the drawing's **code is written into the quiz JSON** — nothing is
+  uploaded and no image URL is created:
+  - question → `post_content` (and the Hindi mirror) as
+    `<span class="aimcq-question-svg"><svg …></svg></span>`
+  - option → `_aimcq_options[i].text` = `<svg …></svg>` with `image: ""`
+    (the same for `_aimcq_options_hi`).
+
+**Image upload is optional.** The source step has a new **Use SVG only** tile —
+no PDF/image and no GitHub image hosting needed. Choosing an `.svg` in the
+*Upload an image* tile also skips cropping/upload. Hosting is only required
+when a slot holds a cropped raster image; mixed questions still work.
+Re-selecting a question loads existing inline SVG back into its slot, and the
+figure-position picker, per-slot W/H + AR lock and "Resize all options" work
+for SVG too.
+
+**Question Editor / Extractor.** The rich-text toolbar and each option's mini
+toolbar gain an **SVG** button to insert SVG (paste/import, width setting) at
+the caret.
+
+**Safety.** SVG goes through a sanitiser before it is embedded: allow-listed
+drawing elements only (no `<script>`, `<foreignObject>`, animation, iframes),
+`on*` handlers / `javascript:` / external links removed, `<style>` rules inlined
+then dropped (no CSS leaks into the page), ids re-scoped uniquely so several
+SVGs on one page never clash. Limit 1.5 MB per SVG (warning above 150 KB).
+SVG labels no longer leak into question titles, search or KaTeX typesetting.
